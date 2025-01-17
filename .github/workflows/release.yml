@@ -14,7 +14,7 @@ jobs:
       # Build
       - name: Build the file
         run: |
-          cd /home/runner/work/boilerplate-card/boilerplate-card
+          cd /home/runner/work/apsley-scheduler-card/apsley-scheduler-card
           npm install
           npm run build
 
@@ -24,7 +24,7 @@ jobs:
 
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: /home/runner/work/boilerplate-card/boilerplate-card/dist/boilerplate-card.js
-          asset_name: boilerplate-card.js
+          file: /home/runner/work/apsley-scheduler-card/apsley-scheduler-card/dist/apsley-scheduler-card.js
+          asset_name: apsley-scheduler-card.js
           tag: ${{ github.ref }}
           overwrite: true

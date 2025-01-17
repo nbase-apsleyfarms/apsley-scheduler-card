@@ -14,13 +14,13 @@ Platform:
   linux x64
 
 Trace: 
-  Error: EACCES: permission denied, unlink '/home/iantrich/Projects/hass/plugins/boilerplate-card/node_modules/.bin/acorn'
+  Error: EACCES: permission denied, unlink '/home/iantrich/Projects/hass/plugins/apsley-scheduler-card/node_modules/.bin/acorn'
 
 npm manifest: 
   {
-    "name": "boilerplate-card",
+    "name": "apsley-scheduler-card",
     "version": "1.4.0",
-    "description": "Lovelace boilerplate-card",
+    "description": "Lovelace apsley-scheduler-card",
     "keywords": [
       "home-assistant",
       "homeassistant",
@@ -29,8 +29,8 @@ npm manifest:
       "lovelace",
       "custom-cards"
     ],
-    "module": "boilerplate-card.js",
-    "repository": "git@github.com:custom_cards/boilerplate-card.git",
+    "module": "apsley-scheduler-card.js",
+    "repository": "git@github.com:custom_cards/apsley-scheduler-card.git",
     "author": "Ian Richardson <iantrich@gmail.com>",
     "license": "MIT",
     "dependencies": {
