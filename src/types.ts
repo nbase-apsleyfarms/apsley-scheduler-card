@@ -7,14 +7,26 @@ declare global {
   }
 }
 
-// TODO Add your configuration elements here for type-checking
+export interface TimeSlot {
+  start: number;
+  end: number;
+  on: boolean;
+  value: number;
+}
+
+export interface ApsleyDay {
+  dayName: string;
+  timeSlots: TimeSlot[];
+}
+
 export interface ApsleyCardConfig extends LovelaceCardConfig {
   type: string;
   name?: string;
+  entity?: string;
+  days?: ApsleyDay[];
   show_warning?: boolean;
   show_error?: boolean;
   test_gui?: boolean;
-  entity?: string;
   tap_action?: ActionConfig;
   hold_action?: ActionConfig;
   double_tap_action?: ActionConfig;

@@ -1,8 +1,13 @@
 import { LitElement, html, css, TemplateResult, CSSResultGroup } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
-import { HomeAssistant, LovelaceCardEditor } from 'custom-card-helpers';
+import {
+  HomeAssistant,
+  LovelaceCard,
+  LovelaceCardEditor,
+} from 'custom-card-helpers';
+import { ApsleyCardConfig } from './types';
+import './editor';
 
-/** Basic interface for a time slot. */
 interface TimeSlot {
   start: number;
   end: number;
@@ -10,17 +15,10 @@ interface TimeSlot {
   value: number;
 }
 
-/** Config interface for your card. */
-interface ApsleyCardConfig {
-  name?: string;
-  days?: {
-    dayName: string;
-    timeSlots: TimeSlot[];
-  }[];
-}
-
 @customElement('apsley-scheduler-card')
-export class ApsleySchedulerCard extends LitElement {
+export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
+  @property({ attribute: false }) public hass?: HomeAssistant;
+
   private _config?: ApsleyCardConfig;
 
   @state() private _days: { dayName: string; timeSlots: TimeSlot[] }[] = [];
@@ -43,47 +41,68 @@ export class ApsleySchedulerCard extends LitElement {
   /** If the user is actively dragging something. */
   @state() private _isDragging = false;
 
+  // 1) Set config from HA
   public setConfig(config: ApsleyCardConfig): void {
     const copy = { ...config };
+
     if (!copy.days || !Array.isArray(copy.days)) {
       copy.days = [
         {
           dayName: 'Monday',
           timeSlots: [{ start: 8, end: 12, on: true, value: 50 }],
         },
-        {
-          dayName: 'Tuesday',
-          timeSlots: [],
-        },
-        {
-          dayName: 'Wednesday',
-          timeSlots: [],
-        },
-        {
-          dayName: 'Thursday',
-          timeSlots: [],
-        },
-        {
-          dayName: 'Friday',
-          timeSlots: [],
-        },
+        { dayName: 'Tuesday', timeSlots: [] },
+        { dayName: 'Wednesday', timeSlots: [] },
+        { dayName: 'Thursday', timeSlots: [] },
+        { dayName: 'Friday', timeSlots: [] },
+        { dayName: 'Saturday', timeSlots: [] },
+        { dayName: 'Sunday', timeSlots: [] },
       ];
     }
+
     this._config = copy;
     this._days = copy.days;
   }
 
+  // 2) Let HA know how big the card is (approx)
   public getCardSize(): number {
     return 6;
   }
 
+  // 3) This tells Home Assistant which editor element to load
+  public static getConfigElement(): LovelaceCardEditor {
+    return document.createElement('apsley-scheduler-card-editor');
+  }
+
+  // 4) Optional: Return a minimal stub config if user adds this card from the UI
+  public static getStubConfig(): Partial<ApsleyCardConfig> {
+    return { type: 'custom:apsley-scheduler-card', name: 'Scheduler Card' };
+  }
+
   protected render(): TemplateResult {
+    // If no config at all, show fallback
     if (!this._config) {
       return html`<ha-card>Configuration missing!</ha-card>`;
     }
 
+    // Build a string for the card header
+    // e.g. "My Scheduler – climate.living_room"
+    const cardTitle = this._config.entity
+      ? `${this._config.name || 'Scheduler'} – ${this._config.entity}`
+      : this._config.name || 'Scheduler';
+
     return html`
-      <ha-card .header=${this._config.name || 'Scheduler'}>
+      <ha-card .header=${cardTitle}>
+        <!-- If no entity, show a simple warning inside the card -->
+        ${!this._config.entity
+          ? html`
+              <div class="warning">
+                <strong>Warning:</strong> No entity configured. Please edit this card and select an entity.
+              </div>
+            `
+          : null}
+
+        <!-- Main content of the card -->
         <div class="days-container">
           ${this._days.map((day, dayIndex) => this._renderDayRow(day, dayIndex))}
         </div>
@@ -571,7 +590,13 @@ export class ApsleySchedulerCard extends LitElement {
       ha-card {
         padding: 0px;
       }
-
+      .warning {
+        background: var(--error-color, #ef5350);
+        color: var(--text-primary-color, #fff);
+        margin: 16px;
+        padding: 8px;
+        border-radius: 4px;
+      }
       .days-container {
         display: flex;
         flex-direction: column;
@@ -713,3 +738,10 @@ export class ApsleySchedulerCard extends LitElement {
     `;
   }
 }
+
+(window as any).customCards = (window as any).customCards || [];
+(window as any).customCards.push({
+  type: 'apsley-scheduler-card',
+  name: 'Apsley Scheduler Card',
+  description: 'A card for scheduling timeslots to control an entity',
+});
