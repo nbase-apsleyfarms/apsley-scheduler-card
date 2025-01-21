@@ -1,119 +1,190 @@
-# Scheduler Card by [@iantrich](https://www.github.com/iantrich)
+# Apsley Scheduler Card
 
-A community driven Scheduler of best practices for Home Assistant Lovelace custom cards
+The **Apsley Scheduler Card** is a custom Lovelace card for [Home Assistant](https://www.home-assistant.io/) that allows you to visually create and manage time-based schedules. It presents each day as a horizontal timeline where you can add timeslots, toggle on/off states, drag to reposition, and resize each timeslot boundary.
 
-[![GitHub Release][releases-shield]][releases]
-[![License][license-shield]](LICENSE.md)
-[![hacs_badge](https://img.shields.io/badge/HACS-Default-orange.svg?style=for-the-badge)](https://github.com/custom-components/hacs)
+## Features
 
-![Project Maintenance][maintenance-shield]
-[![GitHub Activity][commits-shield]][commits]
+1. **Day-based Scheduling**  
+   Each day shows a 24-hour timeline in a horizontal track. You can add, remove, or adjust timeslots for each day.
 
-[![Discord][discord-shield]][discord]
-[![Community Forum][forum-shield]][forum]
+2. **Drag & Drop Timeslots**  
+   - **Move Entire Slot**: Click and drag anywhere on an existing timeslot to reposition it within the 24-hour track.
+   - **Resize Timeslot**: Select a timeslot, then drag one of its boundaries to adjust its start/end times.
 
-## Support
+3. **On/Off States**  
+   Each timeslot can be turned **on** (with an associated `value`) or **off**. When off, the slot is highlighted differently to indicate it’s not active.
 
-Hey dude! Help me out for a couple of :beers: or a :coffee:!
+4. **Value Control**  
+   When a timeslot is **on**, you can set a numerical `value` (e.g., target temperature, brightness, or any other control value) using a slider in the options panel.
 
-[![coffee](https://www.buymeacoffee.com/assets/img/custom_images/black_img.png)](https://www.buymeacoffee.com/zJtVxUAgH)
+5. **Overlap Prevention**  
+   The card automatically prevents overlapping timeslots. If a move or resize would cause the timeslot to overlap another, it won’t be applied.
 
-## Options
+6. **Automatic Timeout**  
+   After selecting a timeslot, the options panel is shown. If no further interaction happens within a few seconds, the panel automatically closes to keep the interface clean.
 
-| Name              | Type    | Requirement  | Description                                 | Default             |
-| ----------------- | ------- | ------------ | ------------------------------------------- | ------------------- |
-| type              | string  | **Required** | `custom:apsley-scheduler-card`                   |
-| name              | string  | **Optional** | Card name                                   | `Scheduler`       |
-| show_error        | boolean | **Optional** | Show what an error looks like for the card  | `false`             |
-| show_warning      | boolean | **Optional** | Show what a warning looks like for the card | `false`             |
-| entity            | string  | **Optional** | Home Assistant entity ID.                   | `none`              |
-| tap_action        | object  | **Optional** | Action to take on tap                       | `action: more-info` |
-| hold_action       | object  | **Optional** | Action to take on hold                      | `none`              |
-| double_tap_action | object  | **Optional** | Action to take on double tap                | `none`              |
+---
 
-## Action Options
+## Installation
 
-| Name            | Type   | Requirement  | Description                                                                                                                            | Default     |
-| --------------- | ------ | ------------ | -------------------------------------------------------------------------------------------------------------------------------------- | ----------- |
-| action          | string | **Required** | Action to perform (more-info, toggle, call-service, navigate url, none)                                                                | `more-info` |
-| navigation_path | string | **Optional** | Path to navigate to (e.g. /lovelace/0/) when action defined as navigate                                                                | `none`      |
-| url             | string | **Optional** | URL to open on click when action is url. The URL will open in a new tab                                                                | `none`      |
-| service         | string | **Optional** | Service to call (e.g. media_player.media_play_pause) when action defined as call-service                                               | `none`      |
-| service_data    | object | **Optional** | Service data to include (e.g. entity_id: media_player.bedroom) when action defined as call-service                                     | `none`      |
-| haptic          | string | **Optional** | Haptic feedback _success, warning, failure, light, medium, heavy, selection_ | `none`      |
-| repeat          | number | **Optional** | How often to repeat the `hold_action` in milliseconds.                                                                                 | `none`       |
+1. **Copy the File**  
+   Copy or download the JavaScript file containing this custom card into your Home Assistant’s `www/` folder. For example:  
+   ```
+   <config folder>/www/apsley-scheduler-card.js
+   ```
+2. **Add to Lovelace Resources**  
+   Add the resource reference to your `configuration.yaml` or via the UI:
 
-## Starting a new card from apsley-scheduler-card
+   ```yaml
+   lovelace:
+     resources:
+       - url: /local/apsley-scheduler-card.js
+         type: module
+   ```
 
-### Step 1
+   If you manage resources through the UI (Settings > Dashboards > Three Dots Menu > Resources), use the same URL (`/local/apsley-scheduler-card.js`) and select **JavaScript Module**.
 
-Click the "Use this template" button on the main page and clone the new repository to your machine
+3. **Refresh**  
+   Refresh your browser or clear cache to ensure the new card is loaded.
 
-### Step 2
+---
 
-Install necessary modules (verified to work in node 8.x)
-`yarn install` or `npm install`
+## Usage
 
-### Step 3
-
-Do a test lint & build on the project. You can see available scripts in the package.json
-`npm run build`
-
-### Step 4
-
-Search the repository for all instances of "TODO" and handle the changes/suggestions
-
-### Step 5
-
-Customize to suit your needs and contribute it back to the community
-
-## Starting a new card from apsley-scheduler-card with [devcontainer][devcontainer]
-
-Note: this is available only in vscode ensure you have the [Remote Containers](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) extension installed.
-
-1. Fork and clone the repository.
-2. Open a [devcontainer][devcontainer] terminal and run `npm start` when it's ready.
-3. The compiled `.js` file will be accessible on
-   `http://127.0.0.1:5000/apsley-scheduler-card.js`.
-4. On a running Home Assistant installation add this to your Lovelace
-   `resources:`
+Once the card is installed and the resource is referenced, you can add it to your Lovelace dashboard. An example configuration could look like this:
 
 ```yaml
-- url: 'http://127.0.0.1:5000/apsley-scheduler-card.js'
-  type: module
+type: custom:apsley-scheduler-card
+name: "My Scheduler"
+days:
+  - dayName: Monday
+    timeSlots:
+      - start: 8
+        end: 12
+        on: true
+        value: 50
+  - dayName: Tuesday
+    timeSlots: []
+  - dayName: Wednesday
+    timeSlots: []
+  - dayName: Thursday
+    timeSlots: []
+  - dayName: Friday
+    timeSlots: []
 ```
 
-_Change "127.0.0.1" to the IP of your development machine._
+### Configuration Options
 
-### Bonus
+| Option     | Type   | Default                                        | Description                                                                                         |
+|------------|--------|------------------------------------------------|-----------------------------------------------------------------------------------------------------|
+| `name`     | string | `Scheduler`                                    | Title displayed at the top of the card.                                                             |
+| `days`     | array  | See code defaults                               | An array of day objects. Each day object contains: <br>`dayName` (string) <br>`timeSlots` (array).  |
+| `timeSlots`| array  | `[]`                                           | An array of time slot objects for that day. Each slot is `{ start, end, on, value }`.               |
 
-If you need a fresh test instance you can install a fresh Home Assistant instance inside the devcontainer as well.
+### Timeslot Object
 
-1. Run the command `container start`.
-2. Home Assistant will install and will eventually be running on port `9123`
-
-## [Troubleshooting](https://github.com/thomasloven/hass-config/wiki/Lovelace-Plugins)
-
-NB This will not work with node 9.x if you see the following errors try installing node 8.10.0
-
-```yarn install
-yarn install v1.3.2
-[1/4] 🔍  Resolving packages...
-warning rollup-plugin-commonjs@10.1.0: This package has been deprecated and is no longer maintained. Please use @rollup/plugin-commonjs.
-[2/4] 🚚  Fetching packages...
-error @typescript-eslint/eslint-plugin@2.6.0: The engine "node" is incompatible with this module. Expected version "^8.10.0 || ^10.13.0 || >=11.10.1".
-error Found incompatible module
-info Visit https://yarnpkg.com/en/docs/cli/install for documentation about this command.
+Each entry in `timeSlots` has the following structure:
+```ts
+interface TimeSlot {
+  start: number;  // Hour of the day (0 - 24)
+  end: number;    // Hour of the day (0 - 24)
+  on: boolean;    // Whether this slot is active or not
+  value: number;  // A user-defined numeric value for this slot
+}
 ```
+**Important**: The card will automatically prevent overlaps. You won’t be able to create or move timeslots such that `start < existing.end && existing.start < end`.
 
-[commits-shield]: https://img.shields.io/github/commit-activity/y/custom-cards/apsley-scheduler-card.svg?style=for-the-badge
-[commits]: https://github.com/custom-cards/apsley-scheduler-card/commits/master
-[devcontainer]: https://code.visualstudio.com/docs/remote/containers
-[discord]: https://discord.gg/5e9yvq
-[discord-shield]: https://img.shields.io/discord/330944238910963714.svg?style=for-the-badge
-[forum-shield]: https://img.shields.io/badge/community-forum-brightgreen.svg?style=for-the-badge
-[forum]: https://community.home-assistant.io/c/projects/frontend
-[license-shield]: https://img.shields.io/github/license/custom-cards/apsley-scheduler-card.svg?style=for-the-badge
-[maintenance-shield]: https://img.shields.io/maintenance/yes/2021.svg?style=for-the-badge
-[releases-shield]: https://img.shields.io/github/release/custom-cards/apsley-scheduler-card.svg?style=for-the-badge
-[releases]: https://github.com/custom-cards/apsley-scheduler-card/releases
+---
+
+## Interaction
+
+1. **Add a Timeslot**  
+   Click on an empty portion of the day’s track. A new timeslot (2 hours by default) is created at the clicked position if it doesn’t overlap another slot.
+
+2. **Select a Timeslot**  
+   Click on an existing timeslot. The timeslot becomes highlighted, and the options panel (below the main card) appears showing its details.
+
+3. **Move a Timeslot**  
+   After selecting a timeslot, click and drag the slot (not the boundary) left or right along the track to change its start and end times.
+
+4. **Resize a Timeslot**  
+   Select a timeslot, then drag one of the slot boundaries to modify its start or end time. The boundaries only appear for the *selected* timeslot.
+
+5. **Toggle On/Off**  
+   In the options panel, switch the slot **on/off** with the toggle. When off, the slot is displayed with a different color, and the `value` field is hidden.
+
+6. **Adjust Value**  
+   If the slot is **on**, you can set the numeric value using the slider in the options panel.
+
+7. **Delete Timeslot**  
+   In the options panel, you can delete the currently selected timeslot with the **Delete Timeslot** button.
+
+---
+
+## Code Overview
+
+### Core Variables
+
+- **`_days`**: Tracks all configured days and their timeslots.
+- **`_selectedDayIndex`/`_selectedSlotIndex`**: Stores which day and timeslot is currently selected.
+- **`_isDragging`**: Indicates whether the user is actively dragging a timeslot or boundary.
+- **`_focusTimeout`**: Holds a timeout ID used to automatically deselect the current timeslot after a short idle period.
+
+### Drag Logic
+
+1. **Dragging Entire Slots**  
+   - `@pointerdown` on a timeslot sets `_draggingTrackDayIndex` and `_draggingTrackSlotIndex`, captures pointer, and calculates an offset (`_draggingTrackPointerFrac`) to track how far into the slot the cursor was when dragging started.
+   - `@pointermove` repositions the slot, updating `start` and `end` hours if no overlap is detected.
+   - `@pointerup` finalizes the position, releases pointer capture, and resets drag state.
+
+2. **Dragging Boundaries**  
+   - Only possible if the timeslot is selected (`_selectedDayIndex`/`_selectedSlotIndex`).
+   - `@pointerdown` on a boundary sets `_dragBoundary` to `'start'` or `'end'`, storing the original hour for clamp checks.
+   - `@pointermove` updates the boundary, again prevented from overlapping.
+   - `@pointerup` finalizes the boundary position and resets drag state.
+
+### Options Panel
+
+When a slot is selected, the bottom panel is shown. It includes:
+
+- Day name and time range.
+- **On/Off Toggle** (`<ha-switch>`).
+- **Value Slider** (only when the slot is on).
+- **Delete** button to remove the slot entirely.
+
+---
+
+## Development
+
+1. **Prerequisites**: Node.js, Yarn, or npm.  
+2. **Install Dependencies**:  
+   ```bash
+   yarn install
+   ```
+3. **Build**:  
+   ```bash
+   yarn build
+   ```
+   or
+   ```bash
+   npm run build
+   ```
+4. **Serving**: Place the resulting JavaScript in your Home Assistant’s `www/` folder.
+
+---
+
+## Contributing
+
+If you’d like to contribute improvements or new features:
+
+1. Fork the repo and create a new branch.
+2. Make changes and add tests where appropriate.
+3. Submit a Pull Request.
+
+---
+
+## License
+
+[MIT](./LICENSE) – feel free to modify and distribute, but provide attribution.
+
+Enjoy scheduling with the **Apsley Scheduler Card**!
