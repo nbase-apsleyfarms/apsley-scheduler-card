@@ -28,8 +28,12 @@ export class SchedulerCardEditor extends ScopedRegistryHost(LitElement) implemen
   };
 
   public setConfig(config: ApsleyCardConfig): void {
-    this._config = config;
-
+    // Clone the config and ensure `time_step` is set
+    this._config = {
+      ...config,
+      time_step: config.time_step ?? 60, // Default to 60 if not provided
+    };
+  
     this.loadCardHelpers();
   }
 
@@ -61,11 +65,12 @@ export class SchedulerCardEditor extends ScopedRegistryHost(LitElement) implemen
     if (!this.hass || !this._helpers) {
       return html``;
     }
-
+  
     // You can restrict on domain type
     const entities = Object.keys(this.hass.states);
-
+  
     return html`
+      <!-- Entity selection -->
       <mwc-select
         naturalMenuWidth
         fixedMenuPosition
@@ -79,12 +84,31 @@ export class SchedulerCardEditor extends ScopedRegistryHost(LitElement) implemen
           return html`<mwc-list-item .value=${entity}>${entity}</mwc-list-item>`;
         })}
       </mwc-select>
+  
+      <!-- Name (Optional) -->
       <mwc-textfield
         label="Name (Optional)"
         .value=${this._name}
         .configValue=${'name'}
         @input=${this._valueChanged}
       ></mwc-textfield>
+  
+      <!-- Interval Step (new) -->
+      <mwc-select
+        label="Interval Step (minutes)"
+        .configValue=${"time_step"}
+        .value=${String(this._time_step)}
+        @selected=${this._valueChanged}        <!-- or @change=${this._valueChanged}, depending on mwc-select version -->
+        @closed=${(ev) => ev.stopPropagation()}
+      >
+        <mwc-list-item value="10">10 minutes</mwc-list-item>
+        <mwc-list-item value="15">15 minutes</mwc-list-item>
+        <mwc-list-item value="30">30 minutes</mwc-list-item>
+        <mwc-list-item value="60">1 hour</mwc-list-item>
+      </mwc-select>
+
+
+      <!-- Existing toggles, etc. -->
       <mwc-formfield .label=${`Toggle warning ${this._show_warning ? 'off' : 'on'}`}>
         <mwc-switch
           .checked=${this._show_warning !== false}
@@ -101,6 +125,10 @@ export class SchedulerCardEditor extends ScopedRegistryHost(LitElement) implemen
       </mwc-formfield>
     `;
   }
+  private get _time_step(): number {
+    // Default to 10 if not set
+    return this._config?.time_step ?? 60;
+  }
 
   private _initialize(): void {
     if (this.hass === undefined) return;
@@ -112,29 +140,45 @@ export class SchedulerCardEditor extends ScopedRegistryHost(LitElement) implemen
   private async loadCardHelpers(): Promise<void> {
     this._helpers = await (window as any).loadCardHelpers();
   }
+  
+  private _valueChanged(ev: Event): void {
+    if (!this._config) return;
 
-  private _valueChanged(ev): void {
-    if (!this._config || !this.hass) {
+    const target = ev.currentTarget as HTMLInputElement | HTMLSelectElement;
+    const configKey = (target as any).configValue;
+    if (!configKey) {
+      return; 
+    }
+
+    let newValue: any;
+    if (typeof (target as any).checked !== 'undefined') {
+      // Handle <mwc-switch> or <ha-switch>
+      newValue = (target as any).checked;
+    } else {
+      // Normal textfield / select / etc.
+      newValue = target.value;
+    }
+
+    // If we expect a number (like time_step), convert:
+    if (configKey === 'time_step') {
+      newValue = Number(newValue);
+    }
+
+    // If it hasn't changed, do nothing
+    if (this._config[configKey] === newValue) {
       return;
     }
-    const target = ev.target;
-    if (this[`_${target.configValue}`] === target.value) {
-      return;
-    }
-    if (target.configValue) {
-      if (target.value === '') {
-        const tmpConfig = { ...this._config };
-        delete tmpConfig[target.configValue];
-        this._config = tmpConfig;
-      } else {
-        this._config = {
-          ...this._config,
-          [target.configValue]: target.checked !== undefined ? target.checked : target.value,
-        };
-      }
-    }
+
+    // Update config
+    const updated = {
+      ...this._config,
+      [configKey]: newValue === '' ? undefined : newValue,
+    };
+
+    this._config = updated;
     fireEvent(this, 'config-changed', { config: this._config });
   }
+
 
   static styles: CSSResultGroup = css`
     mwc-select,

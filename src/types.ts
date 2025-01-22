@@ -31,4 +31,5 @@ export interface ApsleyCardConfig extends LovelaceCardConfig {
   tap_action?: ActionConfig;
   hold_action?: ActionConfig;
   double_tap_action?: ActionConfig;
+  time_step?: number; // Add this property
 }

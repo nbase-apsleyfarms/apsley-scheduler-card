@@ -37,30 +37,48 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
   private _focusTimeout: number | null = null;
   @state() private _isDragging = false;
 
+  private get minutesPerInterval(): number {
+    // fallback to 10 if not specified
+    return this._config?.time_step ?? 60;
+  }
   /**
    * Convert "HH:MM" → number of 10-min intervals.
    * E.g.  "00:00" → 0,  "00:10" → 1,  "09:10" → 9*6 + 1 = 55, ...
    */
   private _parseTimeToIntervals(timeStr: string): number {
-    // "HH:MM:SS" => split on ":" => parse hour & minute
     const [hourStr, minuteStr] = timeStr.split(':');
     const hour = parseInt(hourStr, 10) || 0;
     const minute = parseInt(minuteStr, 10) || 0;
-    // each hour has 6 intervals (10 min each)
-    return hour * 6 + Math.floor(minute / 10);
-  }
 
+    const step = this.minutesPerInterval;         // e.g. 10, 15, 30, or 60
+    const intervalsPerHour = 60 / step;           // e.g. 6 (10-min), 4 (15-min), etc.
+
+    return hour * intervalsPerHour + Math.floor(minute / step);
+  }
+  private get maxIntervals(): number {
+    return (24 * 60) / this.minutesPerInterval; 
+  }
   /**
    * Convert intervals (0..144) → "HH:MM"
    * E.g.  0 → "00:00",  1 → "00:10",  55 → "09:10"
    */
   private _formatIntervals(intervals: number): string {
+    const maxIntervals = this.maxIntervals; // Maximum intervals based on time_step
+    const step = this.minutesPerInterval; // Minutes per interval
+  
+    // Clamp intervals within valid range
     if (intervals < 0) intervals = 0;
-    if (intervals > 144) intervals = 144;
-    const totalMinutes = intervals * 10;
+    if (intervals > maxIntervals) intervals = maxIntervals;
+  
+    // Convert intervals to total minutes
+    const totalMinutes = intervals * step;
+  
+    // Calculate hours and minutes
     const hh = Math.floor(totalMinutes / 60);
     const mm = totalMinutes % 60;
-    return `${hh.toString().padStart(2,'0')}:${mm.toString().padStart(2,'0')}`;
+  
+    // Return formatted time string
+    return `${hh.toString().padStart(2, '0')}:${mm.toString().padStart(2, '0')}`;
   }
 
   /**
@@ -408,7 +426,10 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
   
   
 
-  private _renderDayRow(day: { dayName: string; timeSlots: TimeSlot[] }, dayIndex: number): TemplateResult {
+  private _renderDayRow(
+    day: { dayName: string; timeSlots: TimeSlot[] },
+    dayIndex: number
+  ): TemplateResult {
     return html`
       <div class="day-row">
         <div class="day-label">${day.dayName.charAt(0)}</div>
@@ -418,10 +439,10 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
             @click=${(e: MouseEvent) => this._onTrackClick(e, dayIndex)}
           >
             ${day.timeSlots.map((slot, slotIndex) => {
-              // Convert intervals -> fraction of 24 hours
-              const leftFrac = slot.start / 144; // 144 intervals
-              const widthFrac = (slot.end - slot.start) / 144;
-              const left  = leftFrac * 100;
+              // Use this.maxIntervals (24 * 60 / time_step) instead of fixed 144
+              const leftFrac = slot.start / this.maxIntervals;
+              const widthFrac = (slot.end - slot.start) / this.maxIntervals;
+              const left = leftFrac * 100;
               const width = widthFrac * 100;
   
               const isSelected =
@@ -452,33 +473,46 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
                 <div
                   class="boundary ${isSelected ? 'selected-boundary' : ''}"
                   style="left: ${left}%;"
-                  @pointerdown=${(evt: PointerEvent) => this._onPointerDownBoundary(evt, dayIndex, slotIndex, 'start')}
-                  @pointermove=${(evt: PointerEvent) => this._onPointerMoveBoundary(evt, dayIndex, slotIndex, 'start')}
-                  @pointerup=${(evt: PointerEvent) => this._onPointerUpBoundary(evt, dayIndex, slotIndex, 'start')}
-                  @pointercancel=${(evt: PointerEvent) => this._onPointerUpBoundary(evt, dayIndex, slotIndex, 'start')}
-                  @pointerleave=${(evt: PointerEvent) => this._onPointerUpBoundary(evt, dayIndex, slotIndex, 'start')}
+                  @pointerdown=${(evt: PointerEvent) =>
+                    this._onPointerDownBoundary(evt, dayIndex, slotIndex, 'start')}
+                  @pointermove=${(evt: PointerEvent) =>
+                    this._onPointerMoveBoundary(evt, dayIndex, slotIndex, 'start')}
+                  @pointerup=${(evt: PointerEvent) =>
+                    this._onPointerUpBoundary(evt, dayIndex, slotIndex, 'start')}
+                  @pointercancel=${(evt: PointerEvent) =>
+                    this._onPointerUpBoundary(evt, dayIndex, slotIndex, 'start')}
+                  @pointerleave=${(evt: PointerEvent) =>
+                    this._onPointerUpBoundary(evt, dayIndex, slotIndex, 'start')}
                 ></div>
   
                 <!-- Right boundary -->
                 <div
                   class="boundary ${isSelected ? 'selected-boundary' : ''}"
                   style="left: ${left + width}%;"
-                  @pointerdown=${(evt: PointerEvent) => this._onPointerDownBoundary(evt, dayIndex, slotIndex, 'end')}
-                  @pointermove=${(evt: PointerEvent) => this._onPointerMoveBoundary(evt, dayIndex, slotIndex, 'end')}
-                  @pointerup=${(evt: PointerEvent) => this._onPointerUpBoundary(evt, dayIndex, slotIndex, 'end')}
-                  @pointercancel=${(evt: PointerEvent) => this._onPointerUpBoundary(evt, dayIndex, slotIndex, 'end')}
-                  @pointerleave=${(evt: PointerEvent) => this._onPointerUpBoundary(evt, dayIndex, slotIndex, 'end')}
+                  @pointerdown=${(evt: PointerEvent) =>
+                    this._onPointerDownBoundary(evt, dayIndex, slotIndex, 'end')}
+                  @pointermove=${(evt: PointerEvent) =>
+                    this._onPointerMoveBoundary(evt, dayIndex, slotIndex, 'end')}
+                  @pointerup=${(evt: PointerEvent) =>
+                    this._onPointerUpBoundary(evt, dayIndex, slotIndex, 'end')}
+                  @pointercancel=${(evt: PointerEvent) =>
+                    this._onPointerUpBoundary(evt, dayIndex, slotIndex, 'end')}
+                  @pointerleave=${(evt: PointerEvent) =>
+                    this._onPointerUpBoundary(evt, dayIndex, slotIndex, 'end')}
                 ></div>
               `;
             })}
           </div>
-
+  
           <!-- Hour axis (0..24) -->
           <div class="hour-axis">
             ${[...Array(25).keys()].map((hour) => {
+              // Keep the same 25 markers for hours [0..24]
               const left = (hour / 24) * 100;
               return html`
-                <div class="hour-marker" style="left: ${left}%;"><span>${hour}</span></div>
+                <div class="hour-marker" style="left: ${left}%;">
+                  <span>${hour}</span>
+                </div>
               `;
             })}
           </div>
@@ -486,6 +520,8 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
       </div>
     `;
   }
+  
+  
 
   private _renderOptionsPanel(): TemplateResult {
     if (this._selectedDayIndex == null || this._selectedSlotIndex == null) return html``;
@@ -594,12 +630,13 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
     // Convert to fraction across track
     const frac = clickX / trackRect.width;
     // Convert fraction → intervals
-    let intervalStart = Math.floor(frac * 144);
+    let intervalStart = Math.floor(frac * this.maxIntervals);
     // Default new slot = 12 intervals (2 hours)
-    let intervalEnd = intervalStart + 12;
-    if (intervalEnd > 144) {
-      intervalEnd = 144;
-      intervalStart = 132;
+    const intervalsPer2Hours = 120 / this.minutesPerInterval; 
+    let intervalEnd = intervalStart + intervalsPer2Hours;
+    if (intervalEnd > this.maxIntervals) {
+      intervalEnd = this.maxIntervals;
+      intervalStart = this.maxIntervals - intervalsPer2Hours;
     }
   
     // Check for overlap
@@ -719,7 +756,7 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
 
     // Where did we grab the slot?
     const pointerPx = e.clientX - trackRect.left;
-    const pointerInterval = (pointerPx / trackRect.width) * 144;
+    const pointerInterval = (pointerPx / trackRect.width) * this.maxIntervals;
     // The anchor point within the slot
     this._draggingTrackPointerFrac = (pointerInterval - slot.start) / duration;
     this._draggingTrackPointerFrac = Math.max(0, Math.min(1, this._draggingTrackPointerFrac));
@@ -737,45 +774,48 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
     }
     const dayIndex  = this._draggingTrackDayIndex;
     const slotIndex = this._draggingTrackSlotIndex;
-
+  
     const trackRect = (
       this.renderRoot.querySelectorAll('.track')[dayIndex] as HTMLElement
     )?.getBoundingClientRect();
     if (!trackRect) return;
-
+  
     const slot = this._days[dayIndex].timeSlots[slotIndex];
     if (!slot) return;
-
+  
     const originalStart = this._draggingTrackInitialStart;
     const originalEnd   = this._draggingTrackInitialEnd;
     const duration      = originalEnd - originalStart;
-
-    const pointerPx      = e.clientX - trackRect.left;
-    let pointerInterval  = (pointerPx / trackRect.width) * 144;
-    pointerInterval      = Math.round(pointerInterval);
-
+  
+    // Convert mouse X → fraction → intervals
+    const pointerPx = e.clientX - trackRect.left;
+    let pointerInterval = (pointerPx / trackRect.width) * this.maxIntervals;
+    pointerInterval = Math.round(pointerInterval);
+  
+    // Anchor within the slot so you can drag from the middle
     const anchorInterval = originalStart + this._draggingTrackPointerFrac * duration;
-    let rawDelta         = pointerInterval - anchorInterval;
-    rawDelta             = Math.round(rawDelta);
-
+    let rawDelta = pointerInterval - anchorInterval;
+    rawDelta = Math.round(rawDelta);
+  
     let newStart = originalStart + rawDelta;
     let newEnd   = newStart + duration;
-
-    // clamp
+  
+    // Clamp to valid range [0..this.maxIntervals]
     if (newStart < 0) {
       newStart = 0;
-      newEnd   = duration;
+      newEnd = duration;
     }
-    if (newEnd > 144) {
-      newEnd   = 144;
-      newStart = 144 - duration;
+    if (newEnd > this.maxIntervals) {
+      newEnd = this.maxIntervals;
+      newStart = this.maxIntervals - duration;
     }
-
-    // check overlap
+  
+    // Check for overlap
     if (this._wouldOverlap(dayIndex, slotIndex, newStart, newEnd)) {
       return;
     }
-
+  
+    // Update the slot
     this._days = this._days.map((d, di) => {
       if (di !== dayIndex) return d;
       const newSlots = d.timeSlots.map((s, si) => {
@@ -785,6 +825,7 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
       return { ...d, timeSlots: newSlots };
     });
   }
+  
 
   private _onTrackPointerUp(e: PointerEvent) {
     if (
@@ -865,9 +906,9 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
     if (!trackRect) return;
 
     const pointerPx = e.clientX - trackRect.left;
-    let newInterval = Math.round((pointerPx / trackRect.width) * 144);
+    let newInterval = Math.round((pointerPx / trackRect.width) * this.maxIntervals);
     if (newInterval < 0) newInterval = 0;
-    if (newInterval > 144) newInterval = 144;
+    if (newInterval > this.maxIntervals) newInterval = this.maxIntervals;
 
     const slot = this._days[dayIndex].timeSlots[slotIndex];
     if (!slot) return;
@@ -956,8 +997,13 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
       }
 
       .sync-button:hover {
-        background: var(--primary-color-dark, #0056b3);
+        background: var(--primary-color-dark, #0056b3); /* Default dark blue on hover */
       }
+
+      .sync-button.synced:hover {
+        background: #218838; /* Darker green when synced and hovered */
+      }
+
 
       .warning {
         background: var(--error-color, #ef5350);
@@ -970,8 +1016,8 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
       .days-container {
         display: flex;
         flex-direction: column;
-        gap: 1rem;
-        padding:16px;
+        gap: 0.75rem;
+        padding: 15px;
       }
 
       .day-row {
@@ -997,7 +1043,7 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
       }
       .track {
         position: relative;
-        height: 40px;
+        height: 20px;
         background: rgb(68, 68, 68);
         cursor: pointer;
         overflow: visible;
@@ -1006,7 +1052,7 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
       }
       .hour-axis {
         position: relative;
-        height: 20px;
+        height: 15px;
         background: #222;
         overflow: visible;
       }
@@ -1019,7 +1065,7 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
       }
       .hour-marker span {
         position: relative;
-        top: 2px;
+        top: -2px;
       }
       .timeslot {
         position: absolute;
