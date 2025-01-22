@@ -227,19 +227,25 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
 
   public setConfig(config: ApsleyCardConfig): void {
     const copy = { ...config };
+  
     // If days not defined, provide a default
     if (!copy.days || !Array.isArray(copy.days)) {
       copy.days = [
-        // Store in 10-min intervals. 08:00 -> 8*6=48, 12:00 -> 12*6=72
-        { dayName: 'Monday',    timeSlots: [{ start: 48, end: 72, on: true, value: 20 }] },
-        { dayName: 'Tuesday',   timeSlots: [] },
+        { dayName: 'Monday', timeSlots: [{ start: 48, end: 72, on: true, value: 20 }] },
+        { dayName: 'Tuesday', timeSlots: [] },
         { dayName: 'Wednesday', timeSlots: [] },
-        { dayName: 'Thursday',  timeSlots: [] },
-        { dayName: 'Friday',    timeSlots: [] },
-        { dayName: 'Saturday',  timeSlots: [] },
-        { dayName: 'Sunday',    timeSlots: [] },
+        { dayName: 'Thursday', timeSlots: [] },
+        { dayName: 'Friday', timeSlots: [] },
+        { dayName: 'Saturday', timeSlots: [] },
+        { dayName: 'Sunday', timeSlots: [] },
       ];
     }
+  
+    // Give a default for selection_timeout if not set
+    if (copy.selection_timeout == null) {
+      copy.selection_timeout = 25000; // 25 seconds
+    }
+
     this._config = copy;
     this._days = copy.days;
   }
@@ -311,6 +317,64 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
       </ha-card>
     `;
   }
+  private getEntityDomain(entityId: string): string {
+    // e.g. "light.living_room_lamp" => "light"
+    const [domain] = entityId.split('.');
+    return domain;
+  }
+
+  private _buildSlotActions(entityId: string, slot: TimeSlot) {
+    const domain = this.getEntityDomain(entityId);
+    const isOff = !slot.on;
+  
+    let service = '';
+    let serviceData: any = {};
+  
+    if (domain === 'switch') {
+      // Switch domain only supports on/off
+      service = isOff ? 'switch.turn_off' : 'switch.turn_on';
+      serviceData = {};
+  
+    } else if (domain === 'light') {
+      if (isOff) {
+        service = 'light.turn_off';
+        serviceData = {};
+      } else {
+        // Turn on
+        service = 'light.turn_on';
+        // if you want to use `slot.value` as brightness:
+        //   0 = just "on", >0 = brightness_pct
+        if (slot.value > 0) {
+          serviceData = { brightness_pct: slot.value };
+        } else {
+          serviceData = {};
+        }
+      }
+  
+    } else if (domain === 'climate') {
+      // e.g. your original climate logic
+      if (isOff) {
+        service = 'climate.set_hvac_mode';
+        serviceData = { hvac_mode: 'off' };
+      } else {
+        // "value" is a temperature
+        service = 'climate.set_temperature';
+        serviceData = { hvac_mode: 'heat', temperature: slot.value };
+      }
+  
+    } else {
+      // fallback domain
+      // You could default to on/off if you like:
+      service = isOff ? `${domain}.turn_off` : `${domain}.turn_on`;
+    }
+  
+    return [{
+      entity_id: entityId,
+      service,
+      service_data: serviceData,
+    }];
+  }
+  
 
   /**
    * Example: create a new schedule entity for each day that has timeslots
@@ -326,15 +390,18 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
       return;
     }
   
-    // For mapping "Monday" -> ["mon"], "Tuesday" -> ["tue"], etc.
+    // e.g. "light", "switch", "climate", ...
+    const domain = this.getEntityDomain(entityId);
+  
+    // For mapping "Monday" -> ["mon"], etc.
     const dayToWeekday: Record<string, string[]> = {
-      Monday: ['mon'],
-      Tuesday: ['tue'],
+      Monday:    ['mon'],
+      Tuesday:   ['tue'],
       Wednesday: ['wed'],
-      Thursday: ['thu'],
-      Friday: ['fri'],
-      Saturday: ['sat'],
-      Sunday: ['sun'],
+      Thursday:  ['thu'],
+      Friday:    ['fri'],
+      Saturday:  ['sat'],
+      Sunday:    ['sun'],
     };
   
     // 1) Get all existing scheduler entities
@@ -343,29 +410,19 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
     );
   
     for (const day of this._days) {
-      // If no timeslots for a day, skip (means we won't create a new schedule)
-      if (!day.timeSlots.length) continue;
+      if (!day.timeSlots.length) continue;  // skip empty
   
-      // The short code(s) for this day
       const dayCodes = dayToWeekday[day.dayName] || [];
-      if (!dayCodes.length) {
-        // e.g. dayName might not map (typo?), skip
-        continue;
-      }
+      if (!dayCodes.length) continue;
   
-      // 2) Find all existing schedules for that day & entity
+      // 2) Remove existing schedules for this day & entity
       for (const stateObj of allSchedules) {
         const attr = stateObj.attributes as any;
         const weekdays: string[] = attr.weekdays || [];
         const entities: string[] = attr.entities || [];
         const isOn = stateObj.state === 'on';
   
-        // Check:
-        //  - if it references the same entity
-        //  - if it includes the same day code
-        //  - if it's on
         if (entities.includes(entityId) && dayCodes.some(dc => weekdays.includes(dc)) && isOn) {
-          // 3) Remove that schedule
           try {
             await this.hass.callService('scheduler', 'remove', {
               entity_id: stateObj.entity_id,
@@ -377,36 +434,19 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
         }
       }
   
-      // 4) Create timeslots array for the new schedule
-      const timeslots = day.timeSlots.map((slot) => {
+      // 3) Build timeslots array
+      const timeslots = day.timeSlots.map(slot => {
         const start = this._formatIntervals(slot.start) + ':00';
-        let stop   = this._formatIntervals(slot.end) + ':00';
-  
-        // Adjust invalid `24:00:00`
+        let stop   = this._formatIntervals(slot.end)   + ':00';
         if (stop === '24:00:00') {
           stop = '23:59:59';
         }
   
-        const isOff = !slot.on;
-        const service = isOff ? 'climate.set_hvac_mode' : 'climate.set_temperature';
-        const service_data = isOff
-          ? { hvac_mode: 'off' }
-          : { hvac_mode: 'heat', temperature: slot.value };
-  
-        return {
-          start,
-          stop,
-          actions: [
-            {
-              entity_id: entityId,
-              service,
-              service_data,
-            },
-          ],
-        };
+        const actions = this._buildSlotActions(entityId, slot);
+        return { start, stop, actions };
       });
   
-      // 5) Add the new schedule
+      // 4) Add new schedule
       try {
         await this.hass.callService('scheduler', 'add', {
           name: `${day.dayName} schedule (${entityId})`,
@@ -425,6 +465,7 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
   }
   
   
+  
 
   private _renderDayRow(
     day: { dayName: string; timeSlots: TimeSlot[] },
@@ -439,7 +480,6 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
             @click=${(e: MouseEvent) => this._onTrackClick(e, dayIndex)}
           >
             ${day.timeSlots.map((slot, slotIndex) => {
-              // Use this.maxIntervals (24 * 60 / time_step) instead of fixed 144
               const leftFrac = slot.start / this.maxIntervals;
               const widthFrac = (slot.end - slot.start) / this.maxIntervals;
               const left = leftFrac * 100;
@@ -448,6 +488,15 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
               const isSelected =
                 dayIndex === this._selectedDayIndex &&
                 slotIndex === this._selectedSlotIndex;
+  
+              // Decide how to label the timeslot
+              let displayText: string;
+              if (!slot.on) {
+                displayText = 'Off';
+              } else {
+                // slot.on === true
+                displayText = (slot.value > 0) ? String(slot.value) : 'On';
+              }
   
               return html`
                 <!-- Timeslot background -->
@@ -465,7 +514,7 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
                   @pointerleave=${this._onTrackPointerUp}
                 >
                   <div class="value-badge">
-                    ${slot.on ? slot.value : 'Off'}
+                    ${displayText}
                   </div>
                 </div>
   
@@ -479,10 +528,7 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
                     this._onPointerMoveBoundary(evt, dayIndex, slotIndex, 'start')}
                   @pointerup=${(evt: PointerEvent) =>
                     this._onPointerUpBoundary(evt, dayIndex, slotIndex, 'start')}
-                  @pointercancel=${(evt: PointerEvent) =>
-                    this._onPointerUpBoundary(evt, dayIndex, slotIndex, 'start')}
-                  @pointerleave=${(evt: PointerEvent) =>
-                    this._onPointerUpBoundary(evt, dayIndex, slotIndex, 'start')}
+                  ...
                 ></div>
   
                 <!-- Right boundary -->
@@ -495,10 +541,7 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
                     this._onPointerMoveBoundary(evt, dayIndex, slotIndex, 'end')}
                   @pointerup=${(evt: PointerEvent) =>
                     this._onPointerUpBoundary(evt, dayIndex, slotIndex, 'end')}
-                  @pointercancel=${(evt: PointerEvent) =>
-                    this._onPointerUpBoundary(evt, dayIndex, slotIndex, 'end')}
-                  @pointerleave=${(evt: PointerEvent) =>
-                    this._onPointerUpBoundary(evt, dayIndex, slotIndex, 'end')}
+                  ...
                 ></div>
               `;
             })}
@@ -506,23 +549,118 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
   
           <!-- Hour axis (0..24) -->
           <div class="hour-axis">
-            ${[...Array(25).keys()].map((hour) => {
-              // Keep the same 25 markers for hours [0..24]
-              const left = (hour / 24) * 100;
-              return html`
-                <div class="hour-marker" style="left: ${left}%;">
-                  <span>${hour}</span>
-                </div>
-              `;
-            })}
+            ${this._config?.show_line_markers
+              ? this._renderMinimalAxis()  // see below
+              : this._renderNumericMarkers() // your old approach
+            }
           </div>
         </div>
       </div>
     `;
   }
+  private _renderNumericMarkers(): TemplateResult {
+    // e.g. markers for 0..24
+    return html`
+      ${[...Array(25).keys()].map((hour) => {
+        const left = (hour / 24) * 100;
+        return html`
+          <div class="hour-marker" style="left: ${left}%;">
+            <span>${hour}</span>
+          </div>
+        `;
+      })}
+    `;
+  }
+  private _renderMinimalAxis(): TemplateResult {
+    // We'll only show numeric labels at these key hours
+    const labelHours = [0, 3, 6, 9, 12, 15, 18, 21, 24];
   
+    return html`
+      ${[...Array(25).keys()].map((hour) => {
+        const left = (hour / 24) * 100;
+        const isLabelHour = labelHours.includes(hour);
   
-
+        // If it's one of the labelHours, show a short marker with text.
+        // Otherwise, show a line marker from top to bottom, with no text.
+        if (isLabelHour) {
+          return html`
+            <div class="hour-marker label-hour" style="left: ${left}%;">
+              <span>${hour}</span>
+            </div>
+          `;
+        } else {
+          return html`
+            <div class="hour-marker line-hour" style="left: ${left}%;">
+              <!-- no label -->
+            </div>
+          `;
+        }
+      })}
+    `;
+  }
+  
+  private _renderLineMarkers(): TemplateResult {
+    // Only lines at 3-hour increments: 0,3,6,9,12,15,18,21,24
+    const hours = [0, 3, 6, 9, 12, 15, 18, 21, 24];
+    return html`
+      ${hours.map((hour) => {
+        const left = (hour / 24) * 100;
+        return html`
+          <div class="hour-marker line-only" style="left: ${left}%;">
+            <!-- no numeric label, or optionally just show "0" and "24" if you want -->
+            ${hour === 0 || hour === 24
+              ? html`<span>${hour}</span>`
+              : null}
+          </div>
+        `;
+      })}
+    `;
+  }
+  
+  private _setSlotMode(dayIndex: number, slotIndex: number, mode: 'off' | 'on' | 'value'): void {
+    this._days = this._days.map((day, di) => {
+      if (di !== dayIndex) return day;
+  
+      const newSlots = day.timeSlots.map((slot, si) => {
+        if (si !== slotIndex) return slot;
+  
+        if (mode === 'off') {
+          // Turn it off, set value=0
+          return { ...slot, on: false, value: 0 };
+        } else if (mode === 'on') {
+          // Turn on, but no slider => value=0
+          return { ...slot, on: true, value: 0 };
+        } else {
+          // mode === 'value'
+          // We'll keep the old value if it's > 0, otherwise default to 20
+          const newVal = slot.value > 0 ? slot.value : 20;
+          return { ...slot, on: true, value: newVal };
+        }
+      });
+  
+      return { ...day, timeSlots: newSlots };
+    });
+  
+    // Keep the timeslot selected & reset the focus timer if it was already selected
+    if (this._selectedDayIndex === dayIndex && this._selectedSlotIndex === slotIndex) {
+      this._resetFocusTimeout();
+    }
+  }
+  
+  private _getAllowedModesForDomain(domain: string): Array<'off' | 'on' | 'value'> {
+    if (domain === 'climate') {
+      // Only show Off / Value
+      return ['off', 'value'];
+    } else if (domain === 'light') {
+      // Off / On / Value
+      return ['off', 'on', 'value'];
+    } else if (domain === 'switch') {
+      // Off / On
+      return ['off', 'on'];
+    }
+    // Default fallback
+    return ['off', 'on'];
+  }
   private _renderOptionsPanel(): TemplateResult {
     if (this._selectedDayIndex == null || this._selectedSlotIndex == null) return html``;
     const dayEntry = this._days[this._selectedDayIndex];
@@ -531,9 +669,35 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
     const slot = dayEntry.timeSlots[this._selectedSlotIndex];
     if (!slot) return html``;
   
-    // Convert intervals to "HH:MM" strings
+    // Convert intervals to "HH:MM"
     const startLabel = this._formatIntervals(slot.start);
     const endLabel   = this._formatIntervals(slot.end);
+  
+    // Figure out domain
+    const domain = this.getEntityDomain(this._config!.entity!);
+    // Which modes are allowed for this domain?
+    const allowedModes = this._getAllowedModesForDomain(domain);
+  
+    // Slider label
+    let sliderLabel = '';
+    if (domain === 'climate') {
+      sliderLabel = 'Temperature';
+    } else if (domain === 'light') {
+      sliderLabel = 'Brightness';
+    }
+  
+    // Determine the current mode
+    let currentMode: 'off' | 'on' | 'value';
+    if (!slot.on) {
+      currentMode = 'off';
+    } else {
+      currentMode = slot.value > 0 ? 'value' : 'on';
+    }
+  
+    // We'll only show the slider if domain supports "value"
+    // and the user selected "value" mode
+    const supportsValue = allowedModes.includes('value');
+    const showSlider = supportsValue && (currentMode === 'value');
   
     return html`
       <div class="options-panel">
@@ -541,19 +705,38 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
           <span class="day-display">${dayEntry.dayName}</span>
           <span class="time-display">${startLabel} - ${endLabel}</span>
         </div>
-
+  
+        <!-- Render each allowed mode as a button -->
         <div class="option-row">
-          <span>Power:</span>
-          <ha-switch
-            .checked=${slot.on}
-            @click=${() => this._toggleSlotOnOff(this._selectedDayIndex!, this._selectedSlotIndex!)}
-          ></ha-switch>
+          ${allowedModes.map(mode => {
+            // e.g. mode could be 'off', 'on', or 'value'
+            // We label the button accordingly:
+            const buttonLabel = (mode === 'off')
+              ? 'Off'
+              : (mode === 'on')
+                ? 'On'
+                : 'Value';
+  
+            // Check if this is the active mode
+            const isActive = (currentMode === mode);
+  
+            return html`
+              <mwc-button
+                .label=${buttonLabel}
+                ?unelevated=${isActive}
+                ?outlined=${!isActive}
+                @click=${() => this._setSlotMode(this._selectedDayIndex!, this._selectedSlotIndex!, mode)}
+              >
+              </mwc-button>
+            `;
+          })}
         </div>
-
-        ${slot.on
+  
+        <!-- If in "value" mode and domain supports it, show the slider -->
+        ${showSlider
           ? html`
               <div class="option-row">
-                <span>Value:</span>
+                <span>${sliderLabel}:</span>
                 <input
                   type="range"
                   min="1"
@@ -573,19 +756,28 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
               </div>
             `
           : null}
-
+  
+        <!-- Delete Button -->
         <div class="option-row">
-          <mwc-button outlined @click=${() => this._deleteSlot(this._selectedDayIndex!, this._selectedSlotIndex!)}>
+          <mwc-button
+            outlined
+            @click=${() => this._deleteSlot(this._selectedDayIndex!, this._selectedSlotIndex!)}
+          >
             Delete Timeslot
           </mwc-button>
         </div>
       </div>
     `;
   }
+  
 
   // ────────────────────────────────────────────────────────────────────────────
   // Selection + focus timeout
   // ────────────────────────────────────────────────────────────────────────────
+  private get selectionTimeout(): number {
+    // Guaranteed to be set from setConfig(), or fallback if needed
+    return this._config?.selection_timeout ?? 25000;
+  }
   private _clearSelectionAfterDelay(): void {
     if (this._focusTimeout !== null) {
       clearTimeout(this._focusTimeout);
@@ -594,15 +786,15 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
       this._selectedDayIndex = null;
       this._selectedSlotIndex = null;
       this._focusTimeout = null;
-    }, 2500);
+    }, this.selectionTimeout);
   }
-
+  
   private _selectTimeslot(dayIndex: number, slotIndex: number): void {
     this._selectedDayIndex = dayIndex;
     this._selectedSlotIndex = slotIndex;
     this._resetFocusTimeout();
   }
-
+  
   private _resetFocusTimeout(): void {
     if (this._focusTimeout !== null) {
       clearTimeout(this._focusTimeout);
@@ -611,8 +803,9 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
       this._selectedDayIndex = null;
       this._selectedSlotIndex = null;
       this._focusTimeout = null;
-    }, 2500);
+    }, this.selectionTimeout);
   }
+  
 
   // ────────────────────────────────────────────────────────────────────────────
   // Click on empty track => add new slot (2 hours = 12 intervals)
@@ -1148,6 +1341,40 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
         min-width: 2em;
         text-align: center;
       }
+
+      /* Shared base: position absolute, top:0 so lines can appear. */
+      .hour-marker {
+        position: absolute;
+        transform: translateX(-50%);
+      }
+
+      /* 1) line-hour: a full-height line with no label */
+      .line-hour {
+        top: 7px;
+        bottom: 0;       /* so the line spans the full height */
+        width: 1px;      /* thin line */
+        background: #fff;
+      }
+
+      /* 2) label-hour: no line, just the numeric label */
+      .label-hour {
+        /* If you want a small tick, set a small height or use a short line */
+        top: 0px;          /* or top: 2px; if you want it slightly below the top */
+        width: 1px;
+        height: 1px;     /* effectively invisible line or a small dot */
+        background: none;
+      }
+
+      .label-hour span {
+        position: absolute;
+        top: -2px;      /* place the text above the marker dot */
+        left: 50%;
+        transform: translateX(-50%);
+        color: #fff;
+        font-size: 0.75rem;
+      }
+
+
     `;
   }
 }

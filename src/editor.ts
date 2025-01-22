@@ -28,10 +28,11 @@ export class SchedulerCardEditor extends ScopedRegistryHost(LitElement) implemen
   };
 
   public setConfig(config: ApsleyCardConfig): void {
-    // Clone the config and ensure `time_step` is set
     this._config = {
       ...config,
-      time_step: config.time_step ?? 60, // Default to 60 if not provided
+      time_step: config.time_step ?? 60,          // already present
+      selection_timeout: config.selection_timeout ?? 25000, // default 25s
+      show_line_markers: config.show_line_markers ?? false,
     };
   
     this.loadCardHelpers();
@@ -98,7 +99,7 @@ export class SchedulerCardEditor extends ScopedRegistryHost(LitElement) implemen
         label="Interval Step (minutes)"
         .configValue=${"time_step"}
         .value=${String(this._time_step)}
-        @selected=${this._valueChanged}        <!-- or @change=${this._valueChanged}, depending on mwc-select version -->
+        @change=${this._valueChanged}
         @closed=${(ev) => ev.stopPropagation()}
       >
         <mwc-list-item value="10">10 minutes</mwc-list-item>
@@ -107,6 +108,13 @@ export class SchedulerCardEditor extends ScopedRegistryHost(LitElement) implemen
         <mwc-list-item value="60">1 hour</mwc-list-item>
       </mwc-select>
 
+      <!-- Selection Timeout (ms) -->
+      <mwc-textfield
+        label="Selection Timeout (ms)"
+        .configValue=${'selection_timeout'}
+        .value=${String(this._selectionTimeout)}
+        @input=${this._valueChanged}
+      ></mwc-textfield>
 
       <!-- Existing toggles, etc. -->
       <mwc-formfield .label=${`Toggle warning ${this._show_warning ? 'off' : 'on'}`}>
@@ -123,13 +131,24 @@ export class SchedulerCardEditor extends ScopedRegistryHost(LitElement) implemen
           @change=${this._valueChanged}
         ></mwc-switch>
       </mwc-formfield>
+
+      <mwc-formfield .label=${"Show line markers only?"}>
+        <mwc-switch
+          .checked=${this._config?.show_line_markers ?? false}
+          .configValue=${"show_line_markers"}
+          @change=${this._valueChanged}
+        ></mwc-switch>
+      </mwc-formfield>
+
     `;
   }
   private get _time_step(): number {
     // Default to 10 if not set
     return this._config?.time_step ?? 60;
   }
-
+  private get _selectionTimeout(): number {
+    return this._config?.selection_timeout ?? 25000;
+  }
   private _initialize(): void {
     if (this.hass === undefined) return;
     if (this._config === undefined) return;
@@ -143,38 +162,37 @@ export class SchedulerCardEditor extends ScopedRegistryHost(LitElement) implemen
   
   private _valueChanged(ev: Event): void {
     if (!this._config) return;
-
+  
     const target = ev.currentTarget as HTMLInputElement | HTMLSelectElement;
     const configKey = (target as any).configValue;
     if (!configKey) {
       return; 
     }
-
+  
     let newValue: any;
+    // Switch/checkbox logic
     if (typeof (target as any).checked !== 'undefined') {
-      // Handle <mwc-switch> or <ha-switch>
       newValue = (target as any).checked;
     } else {
-      // Normal textfield / select / etc.
       newValue = target.value;
     }
-
-    // If we expect a number (like time_step), convert:
-    if (configKey === 'time_step') {
+  
+    // Convert certain keys to numbers
+    if (configKey === 'time_step' || configKey === 'selection_timeout') {
       newValue = Number(newValue);
     }
-
+  
     // If it hasn't changed, do nothing
     if (this._config[configKey] === newValue) {
       return;
     }
-
+  
     // Update config
     const updated = {
       ...this._config,
       [configKey]: newValue === '' ? undefined : newValue,
     };
-
+  
     this._config = updated;
     fireEvent(this, 'config-changed', { config: this._config });
   }
