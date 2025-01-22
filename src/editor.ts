@@ -140,6 +140,14 @@ export class SchedulerCardEditor extends ScopedRegistryHost(LitElement) implemen
         ></mwc-switch>
       </mwc-formfield>
 
+      <mwc-formfield .label=${"Show Just Today"}>
+        <mwc-switch
+          .checked=${this._config?.show_today_only ?? false}
+          .configValue=${"show_today_only"}
+          @change=${this._valueChanged}
+        ></mwc-switch>
+      </mwc-formfield>
+
     `;
   }
   private get _time_step(): number {

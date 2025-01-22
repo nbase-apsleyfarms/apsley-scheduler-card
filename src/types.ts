@@ -34,4 +34,5 @@ export interface ApsleyCardConfig extends LovelaceCardConfig {
   time_step?: number;
   selection_timeout?: number;
   show_line_markers?: boolean;
+  show_today_only?: boolean;
 }

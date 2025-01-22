@@ -284,7 +284,7 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
     }
   
     const cardTitle = this._config.entity
-      ? `${this._config.name || 'Scheduler'} – ${this._config.entity}`
+      ? `${this._config.name || 'Scheduler'}`
       : this._config.name || 'Scheduler';
   
     return html`
