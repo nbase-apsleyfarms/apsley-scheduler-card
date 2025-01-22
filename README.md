@@ -1,5 +1,8 @@
 # Apsley Scheduler Card
 
+[![Buy Me a Coffee](https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png)](https://www.buymeacoffee.com/apglitch)
+
+
 The **Apsley Scheduler Card** is a custom Lovelace card for [Home Assistant](https://www.home-assistant.io/) that allows you to visually create and manage time-based schedules. It presents each day as a horizontal timeline where you can add timeslots, toggle on/off states, drag to reposition, and resize each timeslot boundary.
 
 ## Features
@@ -188,3 +191,5 @@ If you’d like to contribute improvements or new features:
 [MIT](./LICENSE) – feel free to modify and distribute, but provide attribution.
 
 Enjoy scheduling with the **Apsley Scheduler Card**!
+
+[![Buy Me a Coffee](https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png)](https://www.buymeacoffee.com/apglitch)

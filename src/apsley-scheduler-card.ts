@@ -5,15 +5,8 @@ import {
   LovelaceCard,
   LovelaceCardEditor,
 } from 'custom-card-helpers';
-import { ApsleyCardConfig } from './types';
+import { ApsleyCardConfig, TimeSlot } from './types';
 import './editor';
-
-interface TimeSlot {
-  start: number;
-  end: number;
-  on: boolean;
-  value: number;
-}
 
 @customElement('apsley-scheduler-card')
 export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
@@ -21,79 +14,269 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
 
   private _config?: ApsleyCardConfig;
 
+  // Each slot's start/end is stored in "intervals of 10 minutes".
+  // 0 = 00:00, 1 = 00:10, ..., 144 = 24:00
   @state() private _days: { dayName: string; timeSlots: TimeSlot[] }[] = [];
   @state() private _selectedDayIndex: number | null = null;
   @state() private _selectedSlotIndex: number | null = null;
+  @state() private _isSynced = false;
 
-  /** For dragging entire slots */
+  // For dragging entire slots
   private _draggingTrackDayIndex: number | null = null;
   private _draggingTrackSlotIndex: number | null = null;
-  private _draggingTrackInitialStart = 0;
-  private _draggingTrackInitialEnd = 0;
-  private _draggingTrackPointerFrac = 0;
+  private _draggingTrackInitialStart = 0; // in intervals
+  private _draggingTrackInitialEnd = 0;   // in intervals
+  private _draggingTrackPointerFrac = 0;  // fraction along the slot for anchoring
 
-  /** For dragging boundaries */
+  // For dragging slot boundaries
   private _draggingBoundaryDayIndex: number | null = null;
   private _draggingBoundarySlotIndex: number | null = null;
   private _dragBoundary: 'start' | 'end' | null = null;
-  private _dragBoundaryOriginalHour: number | null = null;
-  private _focusTimeout: number | null = null; // Timeout ID for clearing focus
-  /** If the user is actively dragging something. */
+  private _dragBoundaryOriginalInterval: number | null = null;
+
+  private _focusTimeout: number | null = null;
   @state() private _isDragging = false;
 
-  // 1) Set config from HA
+  /**
+   * Convert "HH:MM" → number of 10-min intervals.
+   * E.g.  "00:00" → 0,  "00:10" → 1,  "09:10" → 9*6 + 1 = 55, ...
+   */
+  private _parseTimeToIntervals(timeStr: string): number {
+    // "HH:MM:SS" => split on ":" => parse hour & minute
+    const [hourStr, minuteStr] = timeStr.split(':');
+    const hour = parseInt(hourStr, 10) || 0;
+    const minute = parseInt(minuteStr, 10) || 0;
+    // each hour has 6 intervals (10 min each)
+    return hour * 6 + Math.floor(minute / 10);
+  }
+
+  /**
+   * Convert intervals (0..144) → "HH:MM"
+   * E.g.  0 → "00:00",  1 → "00:10",  55 → "09:10"
+   */
+  private _formatIntervals(intervals: number): string {
+    if (intervals < 0) intervals = 0;
+    if (intervals > 144) intervals = 144;
+    const totalMinutes = intervals * 10;
+    const hh = Math.floor(totalMinutes / 60);
+    const mm = totalMinutes % 60;
+    return `${hh.toString().padStart(2,'0')}:${mm.toString().padStart(2,'0')}`;
+  }
+
+  /**
+   * Mapping from e.g. 'mon' to 'Monday'
+   */
+  private _mapDayCodeToName(code: string): string | null {
+    switch (code) {
+      case 'mon': return 'Monday';
+      case 'tue': return 'Tuesday';
+      case 'wed': return 'Wednesday';
+      case 'thu': return 'Thursday';
+      case 'fri': return 'Friday';
+      case 'sat': return 'Saturday';
+      case 'sun': return 'Sunday';
+      default: return null;
+    }
+  }
+
+  // Load existing schedules from HA state objects, parse them into 10-min intervals
+  private _loadExistingSchedulesFromHA(): void {
+    if (!this.hass || !this._config) return;
+  
+    const targetEntity = this._config.entity;
+    if (!targetEntity) return;
+  
+    const dayNameToSlots: Record<string, TimeSlot[]> = {
+      Monday: [],
+      Tuesday: [],
+      Wednesday: [],
+      Thursday: [],
+      Friday: [],
+      Saturday: [],
+      Sunday: [],
+    };
+  
+    // Grab all schedule entities that look like switch.schedule_*
+    const scheduleStates = Object.values(this.hass.states).filter((s) =>
+      s.entity_id.startsWith('switch.schedule_')
+    );
+  
+    console.log('Found schedule states:', scheduleStates);
+  
+    for (const stateObj of scheduleStates) {
+      const attr = stateObj.attributes as any;
+      const weekdays: string[] = attr.weekdays || [];
+      // `timeslots` is an array of strings like "HH:MM:SS - HH:MM:SS"
+      const timeslotStrs: string[] = attr.timeslots || [];
+      // `actions` is a parallel array
+      const timeslotActions: Array<{ service: string; data?: any }> = attr.actions || [];
+  
+      const entities = attr.entities || [];
+
+      // Skip schedules that don't apply to our target entity
+      if (!entities.includes(targetEntity)) {
+        continue;
+      }
+
+      // Skip if it's off or if timeslot count doesn't match action count
+      if (stateObj.state !== 'on') {
+        continue;
+      }
+      if (timeslotStrs.length !== timeslotActions.length) {
+        console.warn(
+          'Timeslot length does not match actions length for',
+          stateObj.entity_id
+        );
+        continue;
+      }
+  
+      for (const dayCode of weekdays) {
+        const dayName = this._mapDayCodeToName(dayCode);
+        if (!dayName) {
+          // skip unknown codes like "daily", "weekend", etc.
+          continue;
+        }
+  
+        const localSlots: TimeSlot[] = [];
+  
+        // Loop through each timeslot, parse the string into start/stop
+        for (let i = 0; i < timeslotStrs.length; i++) {
+          const slotStr = timeslotStrs[i]; // e.g. "00:00:00 - 09:00:00"
+          const action  = timeslotActions[i];
+  
+          const [startStr, stopStr] = slotStr.split('-').map(s => s.trim());
+          if (!startStr || !stopStr) {
+            console.warn('Invalid timeslot string:', slotStr);
+            continue;
+          }
+  
+          // Convert "HH:MM:SS" to 10-min intervals
+          const startIntervals = this._parseTimeToIntervals(startStr);
+          const endIntervals   = this._parseTimeToIntervals(stopStr);
+  
+          if (endIntervals <= startIntervals) {
+            // skip invalid or zero-length
+            continue;
+          }
+  
+          // Determine on/off + temperature from the action
+          let on = false;
+          let value = 0;
+  
+          // e.g. service = "climate.set_hvac_mode" or "climate.set_temperature"
+          if (action.service === 'climate.set_hvac_mode') {
+            if (action.data?.hvac_mode === 'off') {
+              on = false;
+              value = 0;
+            } else if (action.data?.hvac_mode === 'heat') {
+              on = true;
+              value = action.data?.temperature ?? 20;
+            }
+          } else if (action.service === 'climate.set_temperature') {
+            on = true;
+            value = action.data?.temperature ?? 20;
+          }
+  
+          localSlots.push({
+            start: startIntervals,
+            end: endIntervals,
+            on,
+            value,
+          });
+        }
+  
+        // Add all these slots to the dayName
+        dayNameToSlots[dayName].push(...localSlots);
+      }
+    }
+  
+    // Finally, convert dayNameToSlots into the array structure used by your card
+    this._days = Object.keys(dayNameToSlots).map((dayName) => ({
+      dayName,
+      timeSlots: dayNameToSlots[dayName],
+    }));
+  
+    console.log('Loaded schedules:', this._days);
+  }
+  
+  
+  
+
+  firstUpdated(_changedProperties: Map<string | number | symbol, unknown>): void {
+    super.firstUpdated(_changedProperties);
+    this._loadExistingSchedulesFromHA();
+  }
+
   public setConfig(config: ApsleyCardConfig): void {
     const copy = { ...config };
-
+    // If days not defined, provide a default
     if (!copy.days || !Array.isArray(copy.days)) {
       copy.days = [
-        {
-          dayName: 'Monday',
-          timeSlots: [{ start: 8, end: 12, on: true, value: 50 }],
-        },
-        { dayName: 'Tuesday', timeSlots: [] },
+        // Store in 10-min intervals. 08:00 -> 8*6=48, 12:00 -> 12*6=72
+        { dayName: 'Monday',    timeSlots: [{ start: 48, end: 72, on: true, value: 20 }] },
+        { dayName: 'Tuesday',   timeSlots: [] },
         { dayName: 'Wednesday', timeSlots: [] },
-        { dayName: 'Thursday', timeSlots: [] },
-        { dayName: 'Friday', timeSlots: [] },
-        { dayName: 'Saturday', timeSlots: [] },
-        { dayName: 'Sunday', timeSlots: [] },
+        { dayName: 'Thursday',  timeSlots: [] },
+        { dayName: 'Friday',    timeSlots: [] },
+        { dayName: 'Saturday',  timeSlots: [] },
+        { dayName: 'Sunday',    timeSlots: [] },
       ];
     }
-
     this._config = copy;
     this._days = copy.days;
   }
 
-  // 2) Let HA know how big the card is (approx)
   public getCardSize(): number {
     return 6;
   }
 
-  // 3) This tells Home Assistant which editor element to load
   public static getConfigElement(): LovelaceCardEditor {
     return document.createElement('apsley-scheduler-card-editor');
   }
 
-  // 4) Optional: Return a minimal stub config if user adds this card from the UI
   public static getStubConfig(): Partial<ApsleyCardConfig> {
     return { type: 'custom:apsley-scheduler-card', name: 'Scheduler Card' };
   }
 
+  private async _onSyncClick(): Promise<void> {
+    if (!this.hass) return;
+  
+    try {
+      await this._syncSchedules();
+      this._isSynced = true;
+      console.log('Schedules synced successfully.');
+    } catch (err) {
+      console.error('Failed to sync schedules:', err);
+    } finally {
+      setTimeout(() => {
+        this._isSynced = false;
+      }, 3000);
+    }
+  }
+
   protected render(): TemplateResult {
-    // If no config at all, show fallback
     if (!this._config) {
       return html`<ha-card>Configuration missing!</ha-card>`;
     }
-
-    // Build a string for the card header
-    // e.g. "My Scheduler – climate.living_room"
+  
     const cardTitle = this._config.entity
       ? `${this._config.name || 'Scheduler'} – ${this._config.entity}`
       : this._config.name || 'Scheduler';
-
+  
     return html`
-      <ha-card .header=${cardTitle}>
-        <!-- If no entity, show a simple warning inside the card -->
+      <ha-card>
+        <!-- Header with sync button -->
+        <div class="header">
+          <span>${cardTitle}</span>
+          <button
+            class="sync-button ${this._isSynced ? 'synced' : ''}"
+            @click=${this._onSyncClick}
+          >
+            Sync
+          </button>
+        </div>
+  
+        <!-- Warning if no entity is configured -->
         ${!this._config.entity
           ? html`
               <div class="warning">
@@ -101,7 +284,7 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
               </div>
             `
           : null}
-
+  
         <!-- Main content of the card -->
         <div class="days-container">
           ${this._days.map((day, dayIndex) => this._renderDayRow(day, dayIndex))}
@@ -111,22 +294,147 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
     `;
   }
 
+  /**
+   * Example: create a new schedule entity for each day that has timeslots
+   * Convert intervals -> "HH:MM" for start times; default end is implied or
+   * you might create multiple timeslots in the service call.
+   */
+  private async _syncSchedules(): Promise<void> {
+    if (!this.hass || !this._config?.entity) return;
+  
+    const entityId = this._config.entity;
+    if (!entityId) {
+      console.error('No entity configured in _config.');
+      return;
+    }
+  
+    // For mapping "Monday" -> ["mon"], "Tuesday" -> ["tue"], etc.
+    const dayToWeekday: Record<string, string[]> = {
+      Monday: ['mon'],
+      Tuesday: ['tue'],
+      Wednesday: ['wed'],
+      Thursday: ['thu'],
+      Friday: ['fri'],
+      Saturday: ['sat'],
+      Sunday: ['sun'],
+    };
+  
+    // 1) Get all existing scheduler entities
+    const allSchedules = Object.values(this.hass.states).filter((s) =>
+      s.entity_id.startsWith('switch.schedule_')
+    );
+  
+    for (const day of this._days) {
+      // If no timeslots for a day, skip (means we won't create a new schedule)
+      if (!day.timeSlots.length) continue;
+  
+      // The short code(s) for this day
+      const dayCodes = dayToWeekday[day.dayName] || [];
+      if (!dayCodes.length) {
+        // e.g. dayName might not map (typo?), skip
+        continue;
+      }
+  
+      // 2) Find all existing schedules for that day & entity
+      for (const stateObj of allSchedules) {
+        const attr = stateObj.attributes as any;
+        const weekdays: string[] = attr.weekdays || [];
+        const entities: string[] = attr.entities || [];
+        const isOn = stateObj.state === 'on';
+  
+        // Check:
+        //  - if it references the same entity
+        //  - if it includes the same day code
+        //  - if it's on
+        if (entities.includes(entityId) && dayCodes.some(dc => weekdays.includes(dc)) && isOn) {
+          // 3) Remove that schedule
+          try {
+            await this.hass.callService('scheduler', 'remove', {
+              entity_id: stateObj.entity_id,
+            });
+            console.log('Removed existing schedule:', stateObj.entity_id);
+          } catch (err) {
+            console.error('Failed to remove existing schedule:', stateObj.entity_id, err);
+          }
+        }
+      }
+  
+      // 4) Create timeslots array for the new schedule
+      const timeslots = day.timeSlots.map((slot) => {
+        const start = this._formatIntervals(slot.start) + ':00';
+        let stop   = this._formatIntervals(slot.end) + ':00';
+  
+        // Adjust invalid `24:00:00`
+        if (stop === '24:00:00') {
+          stop = '23:59:59';
+        }
+  
+        const isOff = !slot.on;
+        const service = isOff ? 'climate.set_hvac_mode' : 'climate.set_temperature';
+        const service_data = isOff
+          ? { hvac_mode: 'off' }
+          : { hvac_mode: 'heat', temperature: slot.value };
+  
+        return {
+          start,
+          stop,
+          actions: [
+            {
+              entity_id: entityId,
+              service,
+              service_data,
+            },
+          ],
+        };
+      });
+  
+      // 5) Add the new schedule
+      try {
+        await this.hass.callService('scheduler', 'add', {
+          name: `${day.dayName} schedule (${entityId})`,
+          weekdays: dayCodes,
+          timeslots,
+          repeat_type: 'repeat',
+          tags: [],
+        });
+        console.log(`Created schedule for ${day.dayName}.`);
+      } catch (err) {
+        console.error(`Failed to add schedule for ${day.dayName}:`, err);
+      }
+    }
+  
+    console.log('Finished creating schedules via scheduler.add()');
+  }
+  
+  
+
   private _renderDayRow(day: { dayName: string; timeSlots: TimeSlot[] }, dayIndex: number): TemplateResult {
     return html`
       <div class="day-row">
         <div class="day-label">${day.dayName.charAt(0)}</div>
         <div class="track-container">
-          <div class="track" @click=${(e: MouseEvent) => this._onTrackClick(e, dayIndex)}>
+          <div
+            class="track"
+            @click=${(e: MouseEvent) => this._onTrackClick(e, dayIndex)}
+          >
             ${day.timeSlots.map((slot, slotIndex) => {
-              const left = (slot.start / 24) * 100;
-              const width = ((slot.end - slot.start) / 24) * 100;
+              // Convert intervals -> fraction of 24 hours
+              const leftFrac = slot.start / 144; // 144 intervals
+              const widthFrac = (slot.end - slot.start) / 144;
+              const left  = leftFrac * 100;
+              const width = widthFrac * 100;
+  
               const isSelected =
-                dayIndex === this._selectedDayIndex && slotIndex === this._selectedSlotIndex;
+                dayIndex === this._selectedDayIndex &&
+                slotIndex === this._selectedSlotIndex;
   
               return html`
                 <!-- Timeslot background -->
                 <div
-                  class="timeslot ${slot.on ? 'on' : 'off'} ${isSelected ? 'selected' : ''}"
+                  class="timeslot
+                    ${slot.on ? 'on' : 'off'}
+                    ${isSelected ? 'selected' : ''}
+                    ${slot.disabled ? 'disabled' : ''}"
                   style="left: ${left}%; width: ${width}%;"
                   @click=${(evt: Event) => this._onTimeslotClick(evt, dayIndex, slotIndex)}
                   @pointerdown=${(evt: PointerEvent) => this._onTrackPointerDown(evt, dayIndex, slotIndex)}
@@ -164,8 +472,10 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
               `;
             })}
           </div>
+
+          <!-- Hour axis (0..24) -->
           <div class="hour-axis">
-            ${[...Array(25).keys()].map(hour => {
+            ${[...Array(25).keys()].map((hour) => {
               const left = (hour / 24) * 100;
               return html`
                 <div class="hour-marker" style="left: ${left}%;"><span>${hour}</span></div>
@@ -178,18 +488,17 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
   }
 
   private _renderOptionsPanel(): TemplateResult {
-    if (this._selectedDayIndex == null || this._selectedSlotIndex == null) {
-      return html``;
-    }
+    if (this._selectedDayIndex == null || this._selectedSlotIndex == null) return html``;
     const dayEntry = this._days[this._selectedDayIndex];
     if (!dayEntry) return html``;
-
+  
     const slot = dayEntry.timeSlots[this._selectedSlotIndex];
     if (!slot) return html``;
-
-    const startLabel = `${slot.start.toString().padStart(2, '0')}:00`;
-    const endLabel = `${slot.end.toString().padStart(2, '0')}:00`;
-
+  
+    // Convert intervals to "HH:MM" strings
+    const startLabel = this._formatIntervals(slot.start);
+    const endLabel   = this._formatIntervals(slot.end);
+  
     return html`
       <div class="options-panel">
         <div class="option-row">
@@ -217,7 +526,11 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
                   .value=${String(slot.value)}
                   @input=${(e: Event) => {
                     const target = e.currentTarget as HTMLInputElement;
-                    this._updateSlotValue(this._selectedDayIndex!, this._selectedSlotIndex!, parseInt(target.value, 10));
+                    this._updateSlotValue(
+                      this._selectedDayIndex!,
+                      this._selectedSlotIndex!,
+                      parseInt(target.value, 10)
+                    );
                   }}
                 />
                 <span class="value-display">${slot.value}</span>
@@ -235,93 +548,97 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
   }
 
   // ────────────────────────────────────────────────────────────────────────────
-  // On track click → add new timeslot (only if you click empty track)
+  // Selection + focus timeout
   // ────────────────────────────────────────────────────────────────────────────
   private _clearSelectionAfterDelay(): void {
-    // Clear the existing timeout if it's already running
     if (this._focusTimeout !== null) {
       clearTimeout(this._focusTimeout);
     }
-  
-    // Set a new timeout to clear the selection after 5 seconds
-    this._focusTimeout = window.setTimeout(() => {
-      this._selectedDayIndex = null;
-      this._selectedSlotIndex = null;
-      this._focusTimeout = null; // Clear the timeout reference
-    }, 2500); // 5 seconds
-  }
-  
-  // Update selection and reset focus timeout
-  private _selectTimeslot(dayIndex: number, slotIndex: number): void {
-    this._selectedDayIndex = dayIndex;
-    this._selectedSlotIndex = slotIndex;
-    // Now just reset the focus timer
-    this._resetFocusTimeout();
-  }
-  private _resetFocusTimeout(): void {
-    // Clear any existing timer
-    if (this._focusTimeout !== null) {
-      clearTimeout(this._focusTimeout);
-    }
-  
-    // Restart the timer
     this._focusTimeout = window.setTimeout(() => {
       this._selectedDayIndex = null;
       this._selectedSlotIndex = null;
       this._focusTimeout = null;
-    }, 2500); // or however many ms you prefer
+    }, 2500);
   }
-  
-  // Update the `_onTrackClick` method to select the newly created timeslot
+
+  private _selectTimeslot(dayIndex: number, slotIndex: number): void {
+    this._selectedDayIndex = dayIndex;
+    this._selectedSlotIndex = slotIndex;
+    this._resetFocusTimeout();
+  }
+
+  private _resetFocusTimeout(): void {
+    if (this._focusTimeout !== null) {
+      clearTimeout(this._focusTimeout);
+    }
+    this._focusTimeout = window.setTimeout(() => {
+      this._selectedDayIndex = null;
+      this._selectedSlotIndex = null;
+      this._focusTimeout = null;
+    }, 2500);
+  }
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // Click on empty track => add new slot (2 hours = 12 intervals)
+  // ────────────────────────────────────────────────────────────────────────────
   private _onTrackClick(e: MouseEvent, dayIndex: number): void {
+    // If click was on a child element (like the timeslot or boundary), ignore
     if (e.target !== e.currentTarget) return;
   
-    const trackRect = (this.renderRoot.querySelectorAll('.track')[dayIndex] as HTMLElement)?.getBoundingClientRect();
+    const trackRect = (
+      this.renderRoot.querySelectorAll('.track')[dayIndex] as HTMLElement
+    )?.getBoundingClientRect();
     if (!trackRect) return;
   
     const clickX = e.clientX - trackRect.left;
-    const hour = Math.floor((clickX / trackRect.width) * 24);
-  
-    const day = this._days[dayIndex];
-    const newSlots = [...day.timeSlots];
-  
-    let newStart = hour;
-    let newEnd = hour + 2;
-    if (newEnd > 24) {
-      newEnd = 24;
-      newStart = 22;
+    // Convert to fraction across track
+    const frac = clickX / trackRect.width;
+    // Convert fraction → intervals
+    let intervalStart = Math.floor(frac * 144);
+    // Default new slot = 12 intervals (2 hours)
+    let intervalEnd = intervalStart + 12;
+    if (intervalEnd > 144) {
+      intervalEnd = 144;
+      intervalStart = 132;
     }
   
-    const overlaps = newSlots.some((s) => newStart < s.end && s.start < newEnd);
+    // Check for overlap
+    const day = this._days[dayIndex];
+    const overlaps = day.timeSlots.some(
+      (slot) => intervalStart < slot.end && slot.start < intervalEnd
+    );
     if (!overlaps) {
-      newSlots.push({ start: newStart, end: newEnd, on: true, value: 50 });
+      const newSlots = [...day.timeSlots];
+      newSlots.push({
+        start: intervalStart,
+        end: intervalEnd,
+        on: true,
+        value: 20,
+      });
       this._days = this._days.map((d, i) =>
         i === dayIndex ? { ...d, timeSlots: newSlots } : d
       );
-  
-      // Automatically select the newly created timeslot
+      // Select new slot
       this._selectTimeslot(dayIndex, newSlots.length - 1);
     }
   }
-  
-  // Optional: Clear focus timeout when the component is disconnected
+
+  private _onTimeslotClick(e: Event, dayIndex: number, slotIndex: number): void {
+    e.stopPropagation();
+    this._selectTimeslot(dayIndex, slotIndex);
+  }
+
   disconnectedCallback(): void {
     super.disconnectedCallback();
     if (this._focusTimeout !== null) {
       clearTimeout(this._focusTimeout);
     }
   }
-  
-  // Example of updating the `_onTimeslotClick` method
-  private _onTimeslotClick(e: Event, dayIndex: number, slotIndex: number): void {
-    e.stopPropagation();
-    this._selectTimeslot(dayIndex, slotIndex);
-    this._selectedDayIndex = dayIndex;
-    this._selectedSlotIndex = slotIndex;
-  }
 
+  // ────────────────────────────────────────────────────────────────────────────
+  // Toggle / Value / Delete
+  // ────────────────────────────────────────────────────────────────────────────
   private _toggleSlotOnOff(dayIndex: number, slotIndex: number) {
-    // Only reset if we're toggling the currently selected slot
     if (this._selectedDayIndex === dayIndex && this._selectedSlotIndex === slotIndex) {
       this._resetFocusTimeout();
     }
@@ -336,7 +653,6 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
   }
 
   private _updateSlotValue(dayIndex: number, slotIndex: number, newValue: number) {
-    // Reset if the selected slot is being changed
     if (this._selectedDayIndex === dayIndex && this._selectedSlotIndex === slotIndex) {
       this._resetFocusTimeout();
     }
@@ -375,41 +691,37 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
   }
 
   // ────────────────────────────────────────────────────────────────────────────
-  // DRAG LOGIC: Move entire slot
+  // DRAG LOGIC: move entire slot
   // ────────────────────────────────────────────────────────────────────────────
   private _onTrackPointerDown(e: PointerEvent, dayIndex: number, slotIndex: number) {
     e.stopPropagation();
-    // If not selected, select it (which calls _resetFocusTimeout internally).
+    // Select if not already selected
     if (this._selectedDayIndex !== dayIndex || this._selectedSlotIndex !== slotIndex) {
       this._selectTimeslot(dayIndex, slotIndex);
     } else {
-      // If it’s already selected, just reset the timer now.
       this._resetFocusTimeout();
-    }
-
-    // If the slot isn't selected, select it now
-    if (this._selectedDayIndex !== dayIndex || this._selectedSlotIndex !== slotIndex) {
-      this._selectedDayIndex = dayIndex;
-      this._selectedSlotIndex = slotIndex;
     }
 
     const day = this._days[dayIndex];
     const slot = day.timeSlots[slotIndex];
-    if (!slot) return; // safety
+    if (!slot) return;
 
-    // We now allow drag to proceed, because the slot is effectively selected
     this._draggingTrackDayIndex = dayIndex;
     this._draggingTrackSlotIndex = slotIndex;
     this._draggingTrackInitialStart = slot.start;
     this._draggingTrackInitialEnd = slot.end;
 
     const duration = slot.end - slot.start;
-    const trackRect = (this.renderRoot.querySelectorAll('.track')[dayIndex] as HTMLElement)?.getBoundingClientRect();
+    const trackRect = (
+      this.renderRoot.querySelectorAll('.track')[dayIndex] as HTMLElement
+    )?.getBoundingClientRect();
     if (!trackRect) return;
 
+    // Where did we grab the slot?
     const pointerPx = e.clientX - trackRect.left;
-    const pointerHour = (pointerPx / trackRect.width) * 24;
-    this._draggingTrackPointerFrac = (pointerHour - slot.start) / duration;
+    const pointerInterval = (pointerPx / trackRect.width) * 144;
+    // The anchor point within the slot
+    this._draggingTrackPointerFrac = (pointerInterval - slot.start) / duration;
     this._draggingTrackPointerFrac = Math.max(0, Math.min(1, this._draggingTrackPointerFrac));
 
     this._isDragging = true;
@@ -417,41 +729,52 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
   }
 
   private _onTrackPointerMove(e: PointerEvent) {
-    if (this._draggingTrackDayIndex == null || this._draggingTrackSlotIndex == null) return;
-
-    const dayIndex = this._draggingTrackDayIndex;
+    if (
+      this._draggingTrackDayIndex == null ||
+      this._draggingTrackSlotIndex == null
+    ) {
+      return;
+    }
+    const dayIndex  = this._draggingTrackDayIndex;
     const slotIndex = this._draggingTrackSlotIndex;
 
-    const trackRect = (this.renderRoot.querySelectorAll('.track')[dayIndex] as HTMLElement)?.getBoundingClientRect();
+    const trackRect = (
+      this.renderRoot.querySelectorAll('.track')[dayIndex] as HTMLElement
+    )?.getBoundingClientRect();
     if (!trackRect) return;
 
     const slot = this._days[dayIndex].timeSlots[slotIndex];
     if (!slot) return;
 
     const originalStart = this._draggingTrackInitialStart;
-    const originalEnd = this._draggingTrackInitialEnd;
-    const duration = originalEnd - originalStart;
+    const originalEnd   = this._draggingTrackInitialEnd;
+    const duration      = originalEnd - originalStart;
 
-    const pointerPx = e.clientX - trackRect.left;
-    const pointerHour = (pointerPx / trackRect.width) * 24;
-    const anchorHour = originalStart + this._draggingTrackPointerFrac * duration;
-    let rawDelta = pointerHour - anchorHour;
-    rawDelta = Math.round(rawDelta);
+    const pointerPx      = e.clientX - trackRect.left;
+    let pointerInterval  = (pointerPx / trackRect.width) * 144;
+    pointerInterval      = Math.round(pointerInterval);
+
+    const anchorInterval = originalStart + this._draggingTrackPointerFrac * duration;
+    let rawDelta         = pointerInterval - anchorInterval;
+    rawDelta             = Math.round(rawDelta);
 
     let newStart = originalStart + rawDelta;
-    let newEnd = newStart + duration;
+    let newEnd   = newStart + duration;
 
     // clamp
     if (newStart < 0) {
       newStart = 0;
-      newEnd = duration;
+      newEnd   = duration;
     }
-    if (newEnd > 24) {
-      newEnd = 24;
-      newStart = 24 - duration;
+    if (newEnd > 144) {
+      newEnd   = 144;
+      newStart = 144 - duration;
     }
 
-    if (this._wouldOverlap(dayIndex, slotIndex, newStart, newEnd)) return;
+    // check overlap
+    if (this._wouldOverlap(dayIndex, slotIndex, newStart, newEnd)) {
+      return;
+    }
 
     this._days = this._days.map((d, di) => {
       if (di !== dayIndex) return d;
@@ -464,7 +787,10 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
   }
 
   private _onTrackPointerUp(e: PointerEvent) {
-    if (this._draggingTrackDayIndex != null && this._draggingTrackSlotIndex != null) {
+    if (
+      this._draggingTrackDayIndex != null &&
+      this._draggingTrackSlotIndex != null
+    ) {
       (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
     }
     this._isDragging = false;
@@ -473,22 +799,24 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
     this._draggingTrackInitialStart = 0;
     this._draggingTrackInitialEnd = 0;
     this._draggingTrackPointerFrac = 0;
-    if (
-      this._selectedDayIndex === this._draggingTrackDayIndex && 
-      this._selectedSlotIndex === this._draggingTrackSlotIndex
-    ) {
-      this._resetFocusTimeout();
-    }
+    this._resetFocusTimeout();
   }
 
   // ────────────────────────────────────────────────────────────────────────────
-  // DRAG LOGIC: Boundaries (only draggable if slot is already selected)
+  // DRAG LOGIC: boundary
   // ────────────────────────────────────────────────────────────────────────────
-  private _onPointerDownBoundary(e: PointerEvent, dayIndex: number, slotIndex: number, boundary: 'start' | 'end') {
+  private _onPointerDownBoundary(
+    e: PointerEvent,
+    dayIndex: number,
+    slotIndex: number,
+    boundary: 'start' | 'end'
+  ) {
     e.stopPropagation();
-
-    // Only allow boundary dragging if already selected
-    if (this._selectedDayIndex !== dayIndex || this._selectedSlotIndex !== slotIndex) {
+    // Only allow if it's already selected
+    if (
+      this._selectedDayIndex !== dayIndex ||
+      this._selectedSlotIndex !== slotIndex
+    ) {
       return;
     }
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
@@ -499,12 +827,19 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
     this._draggingBoundaryDayIndex = dayIndex;
     this._draggingBoundarySlotIndex = slotIndex;
     this._dragBoundary = boundary;
-    this._dragBoundaryOriginalHour = boundary === 'start' ? slot.start : slot.end;
-    this._resetFocusTimeout();
+    this._dragBoundaryOriginalInterval =
+      boundary === 'start' ? slot.start : slot.end;
+
     this._isDragging = true;
+    this._resetFocusTimeout();
   }
 
-  private _onPointerMoveBoundary(e: PointerEvent, dayIndex: number, slotIndex: number, boundary: 'start' | 'end') {
+  private _onPointerMoveBoundary(
+    e: PointerEvent,
+    dayIndex: number,
+    slotIndex: number,
+    boundary: 'start' | 'end'
+  ) {
     this._resetFocusTimeout();
     if (
       this._draggingBoundaryDayIndex == null ||
@@ -513,8 +848,6 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
     ) {
       return;
     }
-
-    // Must match the slot/boundary we started on
     if (
       this._draggingBoundaryDayIndex !== dayIndex ||
       this._draggingBoundarySlotIndex !== slotIndex ||
@@ -523,42 +856,44 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
       return;
     }
 
-    const originalHour = this._dragBoundaryOriginalHour;
-    if (originalHour == null) return;
+    const originalInterval = this._dragBoundaryOriginalInterval;
+    if (originalInterval == null) return;
 
-    const trackRect = (this.renderRoot.querySelectorAll('.track')[dayIndex] as HTMLElement)?.getBoundingClientRect();
+    const trackRect = (
+      this.renderRoot.querySelectorAll('.track')[dayIndex] as HTMLElement
+    )?.getBoundingClientRect();
     if (!trackRect) return;
 
     const pointerPx = e.clientX - trackRect.left;
-    let newHour = Math.round((pointerPx / trackRect.width) * 24);
-    if (newHour < 0) newHour = 0;
-    if (newHour > 24) newHour = 24;
+    let newInterval = Math.round((pointerPx / trackRect.width) * 144);
+    if (newInterval < 0) newInterval = 0;
+    if (newInterval > 144) newInterval = 144;
 
     const slot = this._days[dayIndex].timeSlots[slotIndex];
     if (!slot) return;
 
-    // Update only that boundary
     if (boundary === 'start') {
-      if (newHour > slot.end) return;
-      if (!this._wouldOverlap(dayIndex, slotIndex, newHour, slot.end)) {
+      // Must not exceed the slot's end
+      if (newInterval > slot.end) return;
+      if (!this._wouldOverlap(dayIndex, slotIndex, newInterval, slot.end)) {
         this._days = this._days.map((d, di) => {
           if (di !== dayIndex) return d;
           const newSlots = d.timeSlots.map((s, si) => {
             if (si !== slotIndex) return s;
-            return { ...s, start: newHour };
+            return { ...s, start: newInterval };
           });
           return { ...d, timeSlots: newSlots };
         });
       }
     } else {
       // boundary === 'end'
-      if (newHour < slot.start) return;
-      if (!this._wouldOverlap(dayIndex, slotIndex, slot.start, newHour)) {
+      if (newInterval < slot.start) return;
+      if (!this._wouldOverlap(dayIndex, slotIndex, slot.start, newInterval)) {
         this._days = this._days.map((d, di) => {
           if (di !== dayIndex) return d;
           const newSlots = d.timeSlots.map((s, si) => {
             if (si !== slotIndex) return s;
-            return { ...s, end: newHour };
+            return { ...s, end: newInterval };
           });
           return { ...d, timeSlots: newSlots };
         });
@@ -566,7 +901,12 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
     }
   }
 
-  private _onPointerUpBoundary(e: PointerEvent, dayIndex: number, slotIndex: number, boundary: 'start' | 'end') {
+  private _onPointerUpBoundary(
+    e: PointerEvent,
+    dayIndex: number,
+    slotIndex: number,
+    boundary: 'start' | 'end'
+  ) {
     this._resetFocusTimeout();
     if (
       this._draggingBoundaryDayIndex === dayIndex &&
@@ -579,7 +919,7 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
     this._draggingBoundaryDayIndex = null;
     this._draggingBoundarySlotIndex = null;
     this._dragBoundary = null;
-    this._dragBoundaryOriginalHour = null;
+    this._dragBoundaryOriginalInterval = null;
   }
 
   // ────────────────────────────────────────────────────────────────────────────
@@ -588,8 +928,37 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
   static get styles(): CSSResultGroup {
     return css`
       ha-card {
-        padding: 0px;
+        padding: 0;
       }
+
+      .header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 16px;
+        font-size: 1.25rem;
+        font-weight: bold;
+        border-bottom: 1px solid var(--divider-color);
+      }
+
+      .sync-button {
+        background: var(--primary-color, #007bff);
+        color: #fff;
+        border: none;
+        padding: 6px 12px;
+        border-radius: 4px;
+        cursor: pointer;
+        transition: background 0.3s;
+      }
+
+      .sync-button.synced {
+        background: #28a745; /* Green when synced */
+      }
+
+      .sync-button:hover {
+        background: var(--primary-color-dark, #0056b3);
+      }
+
       .warning {
         background: var(--error-color, #ef5350);
         color: var(--text-primary-color, #fff);
@@ -597,12 +966,12 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
         padding: 8px;
         border-radius: 4px;
       }
+
       .days-container {
         display: flex;
         flex-direction: column;
         gap: 1rem;
         padding:16px;
-        padding-top:0;
       }
 
       .day-row {
@@ -659,8 +1028,8 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
         transition: filter 0.2s ease;
         touch-action: none;
         user-select: none;
-        border-left:solid 1px #ffffff;
-        border-right:solid 1px #ffffff;
+        border-left: solid 1px #ffffff;
+        border-right: solid 1px #ffffff;
       }
       .timeslot.on {
         background: #63b763;
@@ -671,7 +1040,11 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
       .timeslot.selected {
         filter: brightness(1.2);
       }
-
+      .timeslot.disabled {
+        background: #ccc;
+        opacity: 0.5;
+        pointer-events: none;
+      }
       .value-badge {
         position: absolute;
         top: 50%;
@@ -693,17 +1066,11 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
         z-index: 1;
         touch-action: none;
         user-select: none;
-        
-        /* Hide boundaries by default */
+        /* Hidden by default; only visible on selected slot */
         display: none;
       }
       .boundary.selected-boundary {
-        /* Show them only if we have the "selected-boundary" class */
         display: block;
-      }
-      
-      /* Keep the higher z-index for selected boundaries */
-      .boundary.selected-boundary {
         z-index: 5;
       }
 
@@ -743,5 +1110,5 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
 (window as any).customCards.push({
   type: 'apsley-scheduler-card',
   name: 'Apsley Scheduler Card',
-  description: 'A card for scheduling timeslots to control an entity',
+  description: 'A card for scheduling timeslots to control an entity (10-min intervals).',
 });

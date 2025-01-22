@@ -12,6 +12,7 @@ export interface TimeSlot {
   end: number;
   on: boolean;
   value: number;
+  disabled?: boolean;
 }
 
 export interface ApsleyDay {
