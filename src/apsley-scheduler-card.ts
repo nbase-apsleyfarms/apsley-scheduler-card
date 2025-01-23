@@ -7,6 +7,7 @@ import {
 } from 'custom-card-helpers';
 import { ApsleyCardConfig, TimeSlot } from './types';
 import './editor';
+import { fireEvent } from 'custom-card-helpers';
 
 @customElement('apsley-scheduler-card')
 export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
@@ -277,7 +278,21 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
       }, 3000);
     }
   }
-
+  private _toggleShowTodayOnly(): void {
+    if (!this._config) return;
+  
+    // Toggle the `show_today_only` option
+    this._config = {
+      ...this._config,
+      show_today_only: !this._config.show_today_only,
+    };
+  
+    // Trigger re-render
+    this.requestUpdate();
+  
+    // Fire a config-changed event to notify the parent of the change
+    fireEvent(this, 'config-changed', { config: this._config });
+  }
   protected render(): TemplateResult {
     if (!this._config) {
       return html`<ha-card>Configuration missing!</ha-card>`;
@@ -287,17 +302,26 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
       ? `${this._config.name || 'Scheduler'}`
       : this._config.name || 'Scheduler';
   
+    const today = new Date().toLocaleDateString('en-US', { weekday: 'long' });
+  
     return html`
       <ha-card>
         <!-- Header with sync button -->
         <div class="header">
           <span>${cardTitle}</span>
+          <div>
+          <button
+            outlined
+            class="toggle-today-button"
+            @click=${this._toggleShowTodayOnly}
+          >${this._config?.show_today_only ? 'Show week' : 'Show today'}</button>
           <button
             class="sync-button ${this._isSynced ? 'synced' : ''}"
             @click=${this._onSyncClick}
           >
             Sync
           </button>
+          </div>
         </div>
   
         <!-- Warning if no entity is configured -->
@@ -310,13 +334,16 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
           : null}
   
         <!-- Main content of the card -->
-        <div class="days-container">
-          ${this._days.map((day, dayIndex) => this._renderDayRow(day, dayIndex))}
+        <div
+          class="days-container ${this._config?.show_today_only ? 'show-today-only' : ''}"
+        >
+          ${this._days.map((day, dayIndex) => this._renderDayRow(day, dayIndex, today))}
         </div>
         ${this._renderOptionsPanel()}
       </ha-card>
     `;
   }
+  
   private getEntityDomain(entityId: string): string {
     // e.g. "light.living_room_lamp" => "light"
     const [domain] = entityId.split('.');
@@ -469,11 +496,13 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
 
   private _renderDayRow(
     day: { dayName: string; timeSlots: TimeSlot[] },
-    dayIndex: number
+    dayIndex: number,
+    today: string
   ): TemplateResult {
+    const isToday = day.dayName === today;
     return html`
-      <div class="day-row">
-        <div class="day-label">${day.dayName.charAt(0)}</div>
+      <div class="day-row ${isToday ? 'current-day' : ''}">
+        <div class="day-label">${day.dayName.substring(0, 2)}</div>
         <div class="track-container">
           <div
             class="track"
@@ -1175,7 +1204,12 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
         border-bottom: 1px solid var(--divider-color);
       }
 
-      .sync-button {
+      .header-buttons {
+        display: flex;
+        gap: 8px;
+      }
+
+      .sync-button, .toggle-today-button{
         background: var(--primary-color, #007bff);
         color: #fff;
         border: none;
@@ -1185,6 +1219,25 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
         transition: background 0.3s;
       }
 
+      .sync-button.synced {
+        background: #28a745; /* Green when synced */
+      }
+
+      .sync-button:hover {
+        background: var(--primary-color-dark, #0056b3);
+      }
+
+      .days-container.show-today-only .day-row {
+        display: none;
+      }
+
+      .days-container.show-today-only .day-row.current-day {
+        display: flex;
+      }
+
+      .day-row.current-day {
+        border-radius: 4px;
+      }
       .sync-button.synced {
         background: #28a745; /* Green when synced */
       }
@@ -1219,8 +1272,8 @@ export class ApsleySchedulerCard extends LitElement implements LovelaceCard {
         gap: 1rem;
       }
       .day-label {
-        width: 7px;
-        text-align: right;
+        width: 18px;
+        text-align: left;
         font-weight: bold;
         font-size: 1rem;
         margin-top: 6px;
